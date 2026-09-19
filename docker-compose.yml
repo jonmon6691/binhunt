@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  inventory-locator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: inventory-locator
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      # Persistent host mount for SQLite database, images, and seed_photos drop folder
+      - ./data:/app/data
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - DATA_DIR=/app/data
+      - PORT=8000

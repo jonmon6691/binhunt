@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Application Data (local SQLite, images)
+data/images/
+data/inventory.db
+data/inventory.db-wal
+data/inventory.db-shm
+# Note: Keep data/seed_photos/.gitkeep tracked so the folder exists
+data/seed_photos/*
+!data/seed_photos/.gitkeep
+
+# Environment variables
+.env
+*.local
+*.ses
+
+# System files
+.DS_Store
+Thumbs.db
