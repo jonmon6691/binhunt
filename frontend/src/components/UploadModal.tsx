@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
-import { X, UploadCloud, Trash2, CheckCircle2, AlertCircle, Loader2, Lock } from 'lucide-react';
-import type { Photo } from '../types';
+import { X, UploadCloud, Trash2, CheckCircle2, AlertCircle, Loader2, Lock, Sparkles, Layers } from 'lucide-react';
+import type { Photo, IngestJobState } from '../types';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -41,7 +41,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [uploadStage, setUploadStage] = useState<string>('preparing');
+  const [uploadMessage, setUploadMessage] = useState<string>('');
+  const [uploadEncouragement, setUploadEncouragement] = useState<string>('');
+  const [uploadBinsCount, setUploadBinsCount] = useState<number>(0);
+  const [uploadTiles, setUploadTiles] = useState<{ current: number; total: number }>({ current: 0, total: 1 });
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   // Admin password prompt state
@@ -58,13 +63,17 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   const executeUpload = async (file: File, token: string) => {
     setIsUploading(true);
     setPasswordError('');
-    setUploadStatus('Uploading shelf image...');
+    setUploadProgress(5);
+    setUploadStage('preparing');
+    setUploadMessage('Uploading shelf image...');
+    setUploadEncouragement('Sending your shelf image to the workshop server...');
+    setUploadBinsCount(0);
+    setUploadTiles({ current: 0, total: 1 });
 
     try {
       const formData = new FormData();
       formData.append('file', file);
 
-      setUploadStatus('Analyzing shelf with Vision AI (detecting bins & labels)...');
       const res = await fetch('/api/photos', {
         method: 'POST',
         headers: {
@@ -79,28 +88,114 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           setPendingFile(file);
           setPasswordError('Admin session expired. Please enter password again.');
           setIsUploading(false);
-          setUploadStatus('');
           return;
         }
         const errorData = await res.json().catch(() => ({}));
         throw new Error(errorData.detail || 'Upload and vision ingestion failed');
       }
 
-      setUploadStatus('Saving records...');
-      const data = await res.json();
-      onUploadSuccess(data.photo);
-      setUploadStatus('Ingestion complete!');
-      setTimeout(() => {
-        setIsUploading(false);
-        setUploadStatus('');
-        setPendingFile(null);
-        setPasswordInput('');
-      }, 1200);
+      const resData = await res.json();
+
+      // Synchronous fallback handling (e.g. if sync=true or direct return)
+      if (res.status === 201 && resData.photo) {
+        setUploadProgress(100);
+        setUploadStage('complete');
+        setUploadEncouragement(`Success! ${resData.photo.bins.length} bins indexed!`);
+        onUploadSuccess(resData.photo);
+        setTimeout(() => {
+          setIsUploading(false);
+          setPendingFile(null);
+          setPasswordInput('');
+        }, 1200);
+        return;
+      }
+
+      // Asynchronous ingestion handling (HTTP 202)
+      const jobId = resData.job_id;
+      if (!jobId) {
+        throw new Error('No job ID returned by server');
+      }
+
+      // Connect to SSE stream for live progress updates
+      await new Promise<void>((resolve, reject) => {
+        let isResolved = false;
+        const es = new EventSource(`/api/ingest/jobs/${jobId}/stream`);
+
+        const cleanup = () => {
+          if (!isResolved) {
+            isResolved = true;
+            es.close();
+          }
+        };
+
+        es.onmessage = (event) => {
+          try {
+            const job: IngestJobState = JSON.parse(event.data);
+            setUploadProgress(job.progress);
+            setUploadStage(job.stage);
+            setUploadMessage(job.message);
+            setUploadEncouragement(job.encouragement);
+            setUploadBinsCount(job.bins_count);
+            if (job.total_tiles) {
+              setUploadTiles({ current: job.completed_tiles, total: job.total_tiles });
+            }
+
+            if (job.status === 'completed' && job.photo_record) {
+              cleanup();
+              onUploadSuccess(job.photo_record);
+              setTimeout(() => {
+                setIsUploading(false);
+                setPendingFile(null);
+                setPasswordInput('');
+                resolve();
+              }, 1200);
+            } else if (job.status === 'failed') {
+              cleanup();
+              reject(new Error(job.error || 'Ingestion failed on the server'));
+            }
+          } catch (e) {
+            console.error('Error parsing SSE message:', e);
+          }
+        };
+
+        es.onerror = () => {
+          // Fallback to polling if SSE is interrupted
+          cleanup();
+          const pollTimer = setInterval(async () => {
+            try {
+              const pollRes = await fetch(`/api/ingest/jobs/${jobId}`);
+              if (!pollRes.ok) return;
+              const job: IngestJobState = await pollRes.json();
+              setUploadProgress(job.progress);
+              setUploadStage(job.stage);
+              setUploadMessage(job.message);
+              setUploadEncouragement(job.encouragement);
+              setUploadBinsCount(job.bins_count);
+
+              if (job.status === 'completed' && job.photo_record) {
+                clearInterval(pollTimer);
+                onUploadSuccess(job.photo_record);
+                setTimeout(() => {
+                  setIsUploading(false);
+                  setPendingFile(null);
+                  setPasswordInput('');
+                  resolve();
+                }, 1200);
+              } else if (job.status === 'failed') {
+                clearInterval(pollTimer);
+                reject(new Error(job.error || 'Ingestion failed'));
+              }
+            } catch (err) {
+              clearInterval(pollTimer);
+              reject(err);
+            }
+          }, 1500);
+        };
+      });
     } catch (err: any) {
       console.error('Upload error:', err);
-      setPasswordError(err.message || 'An error occurred during ingestion.');
+      setErrorMessage(err.message || 'An error occurred during ingestion.');
       setIsUploading(false);
-      setUploadStatus('');
     }
   };
 
@@ -185,7 +280,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     try {
       if (pendingFile) {
         setIsUploading(true);
-        setUploadStatus('Authenticating admin password...');
+        setUploadMessage('Authenticating admin password...');
+        setUploadEncouragement('Verifying admin credentials...');
       } else if (pendingDeletePhoto) {
         setIsDeleting(true);
       }
@@ -208,7 +304,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         }
         setIsUploading(false);
         setIsDeleting(false);
-        setUploadStatus('');
+        setUploadMessage('');
         return;
       }
 
@@ -217,16 +313,24 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       setStoredToken(token);
 
       if (pendingFile) {
-        await executeUpload(pendingFile, token);
+        const fileToUpload = pendingFile;
+        setPendingFile(null);
+        setPasswordInput('');
+        setPasswordError('');
+        await executeUpload(fileToUpload, token);
       } else if (pendingDeletePhoto) {
-        await executeDelete(pendingDeletePhoto, token);
+        const photoToDelete = pendingDeletePhoto;
+        setPendingDeletePhoto(null);
+        setPasswordInput('');
+        setPasswordError('');
+        await executeDelete(photoToDelete, token);
       }
     } catch (err: any) {
       console.error('Authentication error:', err);
       setPasswordError(err.message || 'Authentication failed');
       setIsUploading(false);
       setIsDeleting(false);
-      setUploadStatus('');
+      setUploadMessage('');
     }
   };
 
@@ -291,10 +395,57 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             />
 
             {isUploading ? (
-              <div className="flex flex-col items-center space-y-3 py-2">
-                <Loader2 className="w-9 h-9 text-cyan-400 animate-spin" />
-                <p className="text-sm font-medium text-cyan-300 font-mono">{uploadStatus}</p>
-                <p className="text-xs text-slate-400">Gemini VLM is analyzing bounding boxes and tags...</p>
+              <div className="flex flex-col items-center w-full max-w-md py-4 space-y-4">
+                {/* Stage Badge & Animated Loader */}
+                <div className="flex items-center space-x-2">
+                  <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" />
+                  <span className="text-xs font-mono font-semibold uppercase tracking-wider text-cyan-300 bg-cyan-950/80 border border-cyan-800/80 px-2.5 py-1 rounded-full">
+                    {uploadStage === 'preparing' && 'Step 1/4: Preparing Image'}
+                    {uploadStage === 'vision_ai' && 'Step 2/4: Gemini Vision AI'}
+                    {uploadStage === 'deduplication' && 'Step 3/4: Spatial Fusion'}
+                    {uploadStage === 'saving' && 'Step 4/4: Indexing Database'}
+                    {uploadStage === 'complete' && 'Ingestion Complete!'}
+                    {uploadStage === 'queued' && 'Queued in Ingestion Worker'}
+                  </span>
+                </div>
+
+                {/* Progress Bar & Percentage */}
+                <div className="w-full space-y-1.5">
+                  <div className="flex justify-between items-center text-xs font-mono">
+                    <span className="text-slate-300 truncate max-w-[280px]">{uploadMessage}</span>
+                    <span className="text-cyan-300 font-bold">{uploadProgress}%</span>
+                  </div>
+                  <div className="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-slate-700/80">
+                    <div
+                      className="bg-gradient-to-r from-cyan-500 via-teal-400 to-emerald-400 h-full rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${Math.max(5, uploadProgress)}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Encouraging Feedback Card */}
+                <div className="w-full bg-gradient-to-br from-cyan-950/40 via-slate-900 to-slate-950 border border-cyan-800/50 rounded-xl p-3.5 flex items-start space-x-3 shadow-inner text-left">
+                  <div className="p-2 rounded-lg bg-cyan-900/50 border border-cyan-700/60 text-cyan-300 flex-shrink-0 mt-0.5">
+                    <Sparkles className="w-4 h-4 animate-pulse" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-cyan-200">AI Workshop Assistant</p>
+                    <p className="text-xs text-slate-300 mt-0.5 leading-relaxed font-sans">
+                      {uploadEncouragement || 'Carefully inspecting your workshop storage bins...'}
+                    </p>
+                    {uploadBinsCount > 0 && (
+                      <div className="flex items-center space-x-2 mt-2 pt-2 border-t border-cyan-900/40 text-[11px] font-mono text-cyan-400">
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>{uploadBinsCount} bins detected so far</span>
+                        {uploadTiles.total > 1 && (
+                          <span className="text-slate-400">
+                            &bull; Tile {uploadTiles.current} of {uploadTiles.total}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             ) : (
               <>

@@ -323,6 +323,7 @@ def detect_bins_tiled(
     api_key: str,
     model_name: Optional[str] = None,
     max_workers: int = 4,
+    progress_callback: Optional[Any] = None,
 ) -> List[GeminiDetectedBin]:
     """
     Divides image into overlapping tiles, runs Gemini Flash detection in parallel,
@@ -331,6 +332,16 @@ def detect_bins_tiled(
     orig_w, orig_h = image.size
     tiles = generate_tiles(image)
     logger.info("Generated %d tiles for image of size %dx%d", len(tiles), orig_w, orig_h)
+
+    if progress_callback:
+        progress_callback(
+            15,
+            "vision_ai",
+            f"Image partitioned into {len(tiles)} tiles for high-res analysis...",
+            0,
+            0,
+            len(tiles),
+        )
 
     def process_tile(tile_item: Tuple[Image.Image, Tuple[int, int, int, int]]) -> List[GeminiDetectedBin]:
         tile_img, tile_rect = tile_item
@@ -357,17 +368,51 @@ def detect_bins_tiled(
         return projected
 
     all_detections: List[GeminiDetectedBin] = []
+    completed_tiles = 0
+
     if len(tiles) == 1:
         all_detections = process_tile(tiles[0])
+        completed_tiles = 1
+        if progress_callback:
+            progress_callback(
+                75,
+                "vision_ai",
+                f"Analyzed tile 1 of 1 ({len(all_detections)} bins found so far)",
+                len(all_detections),
+                1,
+                1,
+            )
     else:
         with ThreadPoolExecutor(max_workers=min(max_workers, len(tiles))) as executor:
             future_to_tile = [executor.submit(process_tile, t) for t in tiles]
             for future in as_completed(future_to_tile):
+                completed_tiles += 1
                 try:
                     tile_results = future.result()
                     all_detections.extend(tile_results)
                 except Exception as e:
                     logger.warning("Error processing tile in parallel: %s", e)
+
+                if progress_callback:
+                    pct = 15 + int((completed_tiles / len(tiles)) * 65)
+                    progress_callback(
+                        pct,
+                        "vision_ai",
+                        f"Analyzed tile {completed_tiles} of {len(tiles)} ({len(all_detections)} bins found so far)",
+                        len(all_detections),
+                        completed_tiles,
+                        len(tiles),
+                    )
+
+    if progress_callback:
+        progress_callback(
+            82,
+            "deduplication",
+            f"Deduplicating {len(all_detections)} candidate bins across tiles...",
+            len(all_detections),
+            len(tiles),
+            len(tiles),
+        )
 
     deduped = suppress_duplicate_bins(all_detections, iou_threshold=0.40)
     logger.info(
@@ -376,6 +421,17 @@ def detect_bins_tiled(
         len(tiles),
         len(deduped),
     )
+
+    if progress_callback:
+        progress_callback(
+            88,
+            "deduplication",
+            f"Fusing detections into {len(deduped)} unique workshop bins...",
+            len(deduped),
+            len(tiles),
+            len(tiles),
+        )
+
     return deduped
 
 
@@ -448,6 +504,8 @@ def process_image(
     original_name: str,
     gemini_api_key: Optional[str] = None,
     gemini_model: Optional[str] = None,
+    photo_id: Optional[str] = None,
+    progress_callback: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Complete ingestion pipeline:
@@ -456,6 +514,9 @@ def process_image(
     3. Normalizes bounding boxes and computes FastEmbed dense vectors.
     4. Commits records to SQLite database.
     """
+    if progress_callback:
+        progress_callback(5, "preparing", "Inspecting image headers and metadata...", 0)
+
     data_dir = get_data_dir()
     images_dir = data_dir / "images"
 
@@ -472,14 +533,17 @@ def process_image(
             f"Image dimensions ({orig_width}x{orig_height}) exceed maximum allowed limit of {MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION}"
         )
 
-    photo_id = str(uuid.uuid4())
-    filename = f"{photo_id}.jpg"
-    orig_filename = f"orig_{photo_id}.jpg"
-    thumb_filename = f"thumb_{photo_id}.jpg"
+    assigned_photo_id = photo_id or str(uuid.uuid4())
+    filename = f"{assigned_photo_id}.jpg"
+    orig_filename = f"orig_{assigned_photo_id}.jpg"
+    thumb_filename = f"thumb_{assigned_photo_id}.jpg"
 
     full_path = images_dir / filename
     orig_path = images_dir / orig_filename
     thumb_path = images_dir / thumb_filename
+
+    if progress_callback:
+        progress_callback(10, "preparing", "Compressing web-optimized display image and thumbnail...", 0)
 
     # Save full resolution JPEG
     image.save(orig_path, "JPEG", quality=95, optimize=True)
@@ -498,7 +562,7 @@ def process_image(
 
     # Insert photo into database
     photo_record = insert_photo(
-        photo_id=photo_id,
+        photo_id=assigned_photo_id,
         filename=filename,
         original_name=original_name,
         width=orig_width,
@@ -516,6 +580,7 @@ def process_image(
                 image=image,
                 api_key=api_key,
                 model_name=gemini_model,
+                progress_callback=progress_callback,
             )
         except Exception as e:
             logger.error("Gemini detection error: %s", e)
@@ -526,20 +591,35 @@ def process_image(
                 raise
     else:
         logger.info("GEMINI_API_KEY not provided. Using offline mock detector for %s.", original_name)
+        if progress_callback:
+            progress_callback(30, "vision_ai", "Simulating bin detection (offline mock mode)...", 0)
         detected_bins = mock_detect_bins(orig_width, orig_height, original_name)
+        if progress_callback:
+            progress_callback(85, "deduplication", f"Mock detected {len(detected_bins)} bins.", len(detected_bins))
 
     # 3. Coordinate normalization and bin record insertion
+    if progress_callback:
+        progress_callback(90, "saving", f"Saving {len(detected_bins)} bins to inventory database...", len(detected_bins))
+
     for b in detected_bins:
         bin_id = str(uuid.uuid4())
         norm_bbox = normalize_box(b.box_2d)
 
         insert_bin(
             bin_id=bin_id,
-            photo_id=photo_id,
+            photo_id=assigned_photo_id,
             label=b.label,
             semantic_tags=b.semantic_tags,
             bbox=norm_bbox,
         )
 
+    if progress_callback:
+        progress_callback(98, "saving", "Finalizing inventory records...", len(detected_bins))
+
     from backend.database import get_photo
-    return get_photo(photo_id) or photo_record
+    final_record = get_photo(assigned_photo_id) or photo_record
+
+    if progress_callback:
+        progress_callback(100, "complete", f"Successfully indexed {len(detected_bins)} bins!", len(detected_bins))
+
+    return final_record

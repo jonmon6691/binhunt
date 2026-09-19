@@ -13,6 +13,7 @@ function isSafeUrl(url: string): boolean {
 }
 
 interface FloatingOmnibarProps {
+  bannerHeight?: number;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   totalMatches: number;
@@ -29,6 +30,7 @@ interface FloatingOmnibarProps {
 }
 
 export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
+  bannerHeight = 0,
   searchQuery,
   onSearchChange,
   totalMatches,
@@ -103,9 +105,16 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
   }, [searchQuery, onSearchChange]);
 
   const hasSearch = searchQuery.trim().length > 0;
+  const omnibarTop = Math.max(16, bannerHeight + 16 - scrollY);
+  const isAtTop = scrollY === 0;
 
   return (
-    <header className="fixed top-4 left-0 right-0 z-50 px-3 sm:px-6 pointer-events-none">
+    <header
+      className={`fixed left-0 right-0 z-40 px-3 sm:px-6 pointer-events-none ${
+        isAtTop ? 'transition-[top] duration-200 ease-out' : ''
+      }`}
+      style={{ top: `${omnibarTop}px` }}
+    >
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 sm:gap-4">
         {/* Left: Whitebox logo & spacegrep logo (scrolls with photos) */}
         <div

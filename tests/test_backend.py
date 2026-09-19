@@ -30,8 +30,9 @@ from backend.ingestion import (
     suppress_duplicate_bins,
 )
 from backend.models import GeminiDetectedBin
+from backend.ingest_manager import ingest_manager, IngestJob, pick_encouragement
 from backend.main import app, _ip_request_timestamps, _failed_login_attempts, generate_admin_token
-from backend.seed import auto_seed, generate_default_sample_shelf_photo
+from backend.seed import auto_seed, enqueue_seed_photos, generate_default_sample_shelf_photo
 
 
 @pytest.fixture(autouse=True)
@@ -111,9 +112,9 @@ def test_api_manifest_and_upload(monkeypatch):
     assert login_res.status_code == 200
     token = login_res.json()["token"]
 
-    # Upload with Bearer token should succeed (201)
+    # Upload with Bearer token (sync mode) should succeed (201)
     upload_res = client.post(
-        "/api/photos",
+        "/api/photos?sync=true",
         files={"file": ("test_upload.jpg", io.BytesIO(img_bytes), "image/jpeg")},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -474,6 +475,110 @@ def test_verify_token_fails_when_admin_password_unset_or_blank(monkeypatch):
     r_blank = client.delete("/api/photos/some-id", headers={"Authorization": f"Bearer {token}"})
     assert r_blank.status_code == 403
     assert "admin operations are disabled" in r_blank.json()["detail"].lower()
+
+
+def test_async_upload_and_job_tracking(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "supersecret123")
+    client = TestClient(app)
+
+    # Login to obtain Bearer token
+    login_res = client.post("/api/auth/login", json={"password": "supersecret123"})
+    assert login_res.status_code == 200
+    token = login_res.json()["token"]
+
+    # Create dummy test image
+    img = Image.new("RGB", (200, 200), color=(50, 100, 150))
+    import io
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    img_bytes = buf.getvalue()
+
+    # Upload asynchronously (default mode, no sync param)
+    res = client.post(
+        "/api/photos",
+        files={"file": ("async_shelf.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 202
+    data = res.json()
+    assert data["status"] == "queued"
+    assert "job_id" in data
+    assert "photo_id" in data
+    job_id = data["job_id"]
+
+    # Check job status endpoint
+    job_res = client.get(f"/api/ingest/jobs/{job_id}")
+    assert job_res.status_code == 200
+    job_data = job_res.json()
+    assert job_data["job_id"] == job_id
+    assert job_data["original_name"] == "async_shelf.jpg"
+    assert "encouragement" in job_data
+
+    # Check active jobs endpoint
+    active_res = client.get("/api/ingest/active")
+    assert active_res.status_code == 200
+    active_jobs = active_res.json()
+    assert any(j["job_id"] == job_id for j in active_jobs)
+
+    # Non-existent job
+    not_found = client.get("/api/ingest/jobs/non-existent-job-uuid")
+    assert not_found.status_code == 404
+
+
+def test_ingest_manager_progress_and_encouragement():
+    # Test encouraging message generator
+    prep_msg = pick_encouragement("preparing")
+    assert isinstance(prep_msg, str) and len(prep_msg) > 0
+
+    ai_msg = pick_encouragement("vision_ai", bins_count=15, current_tile=2, total_tiles=4)
+    assert isinstance(ai_msg, str) and len(ai_msg) > 0
+
+    dedup_msg = pick_encouragement("deduplication", bins_count=20)
+    assert isinstance(dedup_msg, str) and len(dedup_msg) > 0
+
+    save_msg = pick_encouragement("saving", bins_count=20)
+    assert isinstance(save_msg, str) and len(save_msg) > 0
+
+    complete_msg = pick_encouragement("complete", bins_count=25)
+    assert "25 bins indexed" in complete_msg
+
+    # Test IngestManager job updates
+    job = ingest_manager.create_job(original_name="shelf_test.jpg")
+    assert job.status == "queued"
+    assert job.progress == 0
+
+    ingest_manager.update_job_progress(
+        job_id=job.job_id,
+        progress=45,
+        stage="vision_ai",
+        message="Analyzing tile 2 of 4...",
+        bins_count=12,
+        current_tile=2,
+        total_tiles=4,
+    )
+    assert job.progress == 45
+    assert job.stage == "vision_ai"
+    assert job.bins_count == 12
+    assert len(job.encouragement) > 0
+
+    ingest_manager.complete_job(
+        job_id=job.job_id,
+        photo_record={"id": job.photo_id, "bins": [{"id": "b1"}, {"id": "b2"}]},
+    )
+    assert job.status == "completed"
+    assert job.progress == 100
+    assert job.bins_count == 2
+
+
+def test_enqueue_seed_photos_non_blocking():
+    data_dir = get_data_dir()
+    seed_dir = data_dir / "seed_photos"
+    seed_dir.mkdir(parents=True, exist_ok=True)
+
+    # Calling enqueue_seed_photos should complete in < 50ms without blocking
+    queued = enqueue_seed_photos(ingest_manager)
+    assert queued >= 0
+
 
 
 

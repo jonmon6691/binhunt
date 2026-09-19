@@ -12,13 +12,14 @@ import secrets
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
+import asyncio
 from pathlib import Path
 from typing import Optional
 
 from PIL import Image
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -30,9 +31,10 @@ from backend.database import (
     get_photo,
     init_db,
 )
+from backend.ingest_manager import ingest_manager
 from backend.ingestion import process_image
 from backend.models import LoginRequest, LoginResponse, UploadResponse
-from backend.seed import auto_seed
+from backend.seed import auto_seed, enqueue_seed_photos
 
 logging.basicConfig(
     level=logging.INFO,
@@ -193,14 +195,18 @@ def verify_admin_token(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize database and scan seed folder
+    # Startup: Initialize database immediately
     init_db()
+    # Start the async background ingestion worker
+    await ingest_manager.start()
     try:
-        new_count = auto_seed()
-        logger.info("Startup complete. Auto-seeded %d photos.", new_count)
+        queued_count = enqueue_seed_photos(ingest_manager)
+        logger.info("Startup complete. Enqueued %d seed photos for background ingestion.", queued_count)
     except Exception as e:
-        logger.exception("Error during auto-seed: %s", e)
+        logger.exception("Error during background auto-seed check: %s", e)
     yield
+    # Shutdown
+    await ingest_manager.stop()
 
 
 app = FastAPI(
@@ -265,6 +271,101 @@ def get_config():
     }
 
 
+@app.get("/api/ingest/active")
+def get_active_ingest_jobs():
+    """Returns all currently queued or processing ingestion jobs."""
+    return [j.to_dict() for j in ingest_manager.get_active_jobs()]
+
+
+@app.get("/api/ingest/jobs/{job_id}")
+def get_ingest_job_status(job_id: str):
+    """Returns the current status of an ingestion job."""
+    job = ingest_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Ingestion job {job_id} not found",
+        )
+    return job.to_dict()
+
+
+@app.get("/api/ingest/jobs/{job_id}/stream")
+async def stream_job_progress(job_id: str, request: Request):
+    """Server-Sent Events (SSE) stream for a single photo ingestion job."""
+    job = ingest_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Ingestion job {job_id} not found",
+        )
+
+    async def event_generator():
+        q = ingest_manager.subscribe_job(job_id)
+        try:
+            # Yield initial state
+            current_job = ingest_manager.get_job(job_id)
+            if current_job:
+                yield f"data: {json.dumps(current_job.to_dict())}\n\n"
+                if current_job.status in ("completed", "failed"):
+                    return
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield f"data: {json.dumps(data)}\n\n"
+                    if data.get("status") in ("completed", "failed"):
+                        break
+                except asyncio.TimeoutError:
+                    # Keepalive ping to prevent proxy timeout
+                    yield ": keepalive\n\n"
+        finally:
+            ingest_manager.unsubscribe_job(job_id, q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/ingest/stream")
+async def stream_global_ingest_events(request: Request):
+    """Server-Sent Events (SSE) stream for all background ingestion activities (seed & uploads)."""
+    async def event_generator():
+        q = ingest_manager.subscribe_global()
+        try:
+            # Send initial active jobs snapshot
+            active_jobs = [j.to_dict() for j in ingest_manager.get_active_jobs()]
+            yield f"event: initial\ndata: {json.dumps(active_jobs)}\n\n"
+
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield f"data: {json.dumps(data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            ingest_manager.unsubscribe_global(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.post(
     "/api/auth/login",
     response_model=LoginResponse,
@@ -307,13 +408,18 @@ def login(request: Request, body: LoginRequest):
 
 @app.post(
     "/api/photos",
-    status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(check_rate_limit), Depends(verify_admin_token)],
 )
 async def upload_photo(
+    response: Response,
     file: UploadFile = File(...),
+    sync: bool = False,
 ):
-    """Ingests a new shelf photo, running Gemini VLM detection."""
+    """
+    Ingests a new shelf photo.
+    By default, initiates asynchronous processing and returns HTTP 202 with a job_id.
+    If sync=true is specified, runs synchronously and returns HTTP 201 with the completed photo record.
+    """
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -345,24 +451,43 @@ async def upload_photo(
             detail="Invalid or corrupt image file",
         )
 
-    try:
-        record = process_image(
-            file_bytes=bytes(contents),
-            original_name=file.filename or "uploaded_shelf.jpg",
-        )
-        return {"status": "created", "photo": record}
-    except ValueError as ve:
-        logger.warning("Validation error in photo upload: %s", ve)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(ve),
-        )
-    except Exception as e:
-        logger.exception("Failed to process photo upload: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to process photo due to an internal server error",
-        )
+    filename = file.filename or "uploaded_shelf.jpg"
+
+    if sync:
+        try:
+            record = await asyncio.to_thread(
+                process_image,
+                file_bytes=bytes(contents),
+                original_name=filename,
+            )
+            response.status_code = status.HTTP_201_CREATED
+            return {"status": "created", "photo": record}
+        except ValueError as ve:
+            logger.warning("Validation error in photo upload: %s", ve)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(ve),
+            )
+        except Exception as e:
+            logger.exception("Failed to process photo upload: %s", e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to process photo due to an internal server error",
+            )
+
+    # Asynchronous ingestion flow via IngestManager
+    job = ingest_manager.create_job(
+        original_name=filename,
+        file_bytes=bytes(contents),
+        is_seed=False,
+    )
+    response.status_code = status.HTTP_202_ACCEPTED
+    return {
+        "status": "queued",
+        "job_id": job.job_id,
+        "photo_id": job.photo_id,
+        "message": f"Shelf photo '{filename}' queued for asynchronous processing.",
+    }
 
 
 @app.delete(

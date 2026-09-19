@@ -94,10 +94,11 @@ def generate_default_sample_shelf_photo(target_path: Path):
     logger.info("Generated default sample shelf image at %s", target_path)
 
 
-def auto_seed():
+def auto_seed(progress_callback=None):
     """
     Scans ./data/seed_photos/ on boot and ingests any photos not yet present in the database.
     If seed_photos/ is empty and database has no photos, creates a realistic demo shelf photo.
+    Synchronous version used by CLI and tests.
     """
     init_db()
     data_dir = get_data_dir()
@@ -127,7 +128,7 @@ def auto_seed():
         try:
             with open(file_path, "rb") as f:
                 photo_bytes = f.read()
-            record = process_image(photo_bytes, original_name=file_path.name)
+            record = process_image(photo_bytes, original_name=file_path.name, progress_callback=progress_callback)
             bin_count = len(record.get("bins", []))
             logger.info("Successfully ingested %s (%d bins registered)", file_path.name, bin_count)
             ingested_count += 1
@@ -135,6 +136,37 @@ def auto_seed():
             logger.exception("Failed to ingest seed photo %s: %s", file_path.name, e)
 
     return ingested_count
+
+
+def enqueue_seed_photos(manager) -> int:
+    """
+    Scans ./data/seed_photos/ and enqueues any unindexed photos into IngestManager
+    for non-blocking background ingestion.
+    """
+    init_db()
+    data_dir = get_data_dir()
+    seed_dir = data_dir / "seed_photos"
+    seed_dir.mkdir(parents=True, exist_ok=True)
+
+    seed_files = [f for f in seed_dir.iterdir() if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS]
+    manifest = get_manifest()
+
+    if not seed_files and len(manifest) == 0:
+        sample_path = seed_dir / "sample_workshop_shelf_01.jpg"
+        logger.info("No seed photos found and DB is empty. Creating starter sample shelf: %s", sample_path.name)
+        generate_default_sample_shelf_photo(sample_path)
+        seed_files = [sample_path]
+
+    queued_count = 0
+    for file_path in sorted(seed_files):
+        existing = get_photo_by_original_name(file_path.name)
+        if existing is not None:
+            continue
+        logger.info("Enqueueing seed photo for background ingestion: %s", file_path.name)
+        manager.create_job(original_name=file_path.name, file_path=file_path, is_seed=True)
+        queued_count += 1
+
+    return queued_count
 
 
 if __name__ == "__main__":

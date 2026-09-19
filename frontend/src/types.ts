@@ -49,3 +49,22 @@ export type WorkerOutgoingMessage =
       moderateCount: number;
     }
   | { type: 'ERROR'; message: string };
+
+export interface IngestJobState {
+  job_id: string;
+  photo_id: string;
+  original_name: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  progress: number;
+  stage: 'queued' | 'preparing' | 'vision_ai' | 'deduplication' | 'saving' | 'complete' | 'failed';
+  message: string;
+  encouragement: string;
+  bins_count: number;
+  total_tiles: number;
+  completed_tiles: number;
+  error?: string | null;
+  created_at: number;
+  updated_at: number;
+  photo_record?: Photo | null;
+  is_seed: boolean;
+}

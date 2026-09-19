@@ -4,6 +4,7 @@ import { FloatingOmnibar } from './components/FloatingOmnibar';
 import { ShelfStream } from './components/ShelfStream';
 import { RadarIndicators } from './components/RadarIndicators';
 import { UploadModal } from './components/UploadModal';
+import { IngestBanner } from './components/IngestBanner';
 
 const KIOSK_TIMEOUT_SECONDS = 60;
 
@@ -24,6 +25,7 @@ export function App() {
   // UI modals & state
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [bannerHeight, setBannerHeight] = useState(0);
 
   // References
   const workerRef = useRef<Worker | null>(null);
@@ -386,8 +388,15 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[#0b0f17] text-slate-100 flex flex-col relative selection:bg-cyan-500/30 selection:text-cyan-200">
+      {/* Background Ingest / Seed Progress Banner (shifts page down and scrolls away) */}
+      <IngestBanner
+        onJobCompleted={handleUploadSuccess}
+        onBannerHeightChange={setBannerHeight}
+      />
+
       {/* Pinned Top Omnibar */}
       <FloatingOmnibar
+        bannerHeight={bannerHeight}
         searchQuery={searchQuery}
         onSearchChange={handleSearchChange}
         totalMatches={totalMatches}
