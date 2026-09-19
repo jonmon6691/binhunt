@@ -13,6 +13,7 @@ services:
       # Persistent host mount for SQLite database, images, and seed_photos drop folder
       - ./data:/app/data
     environment:
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
       - DATA_DIR=/app/data
