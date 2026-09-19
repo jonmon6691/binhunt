@@ -143,7 +143,7 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
 
           {/* Right of Whitebox: spacegrep 'sg' Logo */}
           <div className="h-10 sm:h-11 flex items-center drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
-            <SpacegrepLogo className="h-full w-auto max-w-[72px]" />
+            <SpacegrepLogo className="h-full" />
           </div>
         </div>
 
