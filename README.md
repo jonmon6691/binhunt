@@ -1,6 +1,7 @@
-# Hackerspace Visual Inventory Locator
+# spacegrep
+A Hackerspace Visual Inventory Locator
 
-A lightweight, self-contained visual inventory search appliance for hackerspaces, maker workshops, and electronics labs. It overlays high-resolution photos of component shelves, bins, and organizers with a real-time (< 50ms) hybrid (literal + semantic) search interface.
+spacegrep is a lightweight, self-contained visual inventory search appliance for hackerspaces, maker workshops, and electronics labs. It overlays high-resolution photos of component shelves, bins, and organizers with a real-time (< 50ms) hybrid (literal + semantic) search interface.
 
 ![Demo](docs/demo.jpg)
 
@@ -28,7 +29,7 @@ A lightweight, self-contained visual inventory search appliance for hackerspaces
 ### 2. Setup Environment
 ```bash
 # Clone repository and enter directory
-cd binhunt
+cd spacegrep
 
 # Create Python virtual environment and install backend dependencies
 python3 -m venv .venv
@@ -42,7 +43,9 @@ npm run build
 cd ..
 ```
 
-### 3. Configure Gemini API Key (Optional)
+### 3. Configure Gemini API Key
+Gemini is the core component in bin segmentation and OCR. It is required for the app to function.
+
 Create a `.env` file from the template:
 ```bash
 cp .env.example .env
@@ -51,7 +54,6 @@ Add your Gemini API key (obtainable from [Google AI Studio](https://aistudio.goo
 ```bash
 GEMINI_API_KEY=AIzaSy...
 ```
-*(Note: If `GEMINI_API_KEY` is omitted, the app will run in offline mode using synthetic workshop bins so you can develop and test without cloud access).*
 
 ### 4. Run the Appliance
 ```bash
