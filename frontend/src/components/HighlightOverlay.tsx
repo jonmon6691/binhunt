@@ -102,40 +102,27 @@ export const HighlightOverlay: FC<HighlightOverlayProps> = ({
               />
             )}
 
-            {/* Industrial Yellow Label Badge - consistent yellow on all matches, inverted on active */}
-            <div
-              style={{
-                top: isNearTop ? '6px' : '-26px',
-                left: '0px',
-              }}
-              className={`absolute flex items-center space-x-1.5 px-2.5 py-0.5 rounded shadow-2xl backdrop-blur-md whitespace-nowrap z-20 pointer-events-none transition-all duration-150 ${
-                isActive
-                  ? 'bg-yellow-400 border-2 border-white text-black font-black shadow-[0_0_16px_rgba(250,204,21,0.9)] scale-105'
-                  : isHigh
-                  ? 'bg-black/95 border-2 border-yellow-400 text-yellow-400 font-extrabold shadow-black'
-                  : 'bg-black/90 border border-yellow-400/80 text-yellow-400 font-bold shadow-black'
-              }`}
-            >
-              {isActive && (
-                <span className="inline-block px-1 py-0.2 text-[9px] font-black bg-black text-yellow-300 rounded mr-0.5 uppercase tracking-wider">
-                  ACTIVE
+            {/* Industrial Yellow Label Badge - only shown for the active result */}
+            {isActive && (
+              <div
+                style={{
+                  top: isNearTop ? '6px' : '-26px',
+                  left: '0px',
+                }}
+                className={`absolute flex items-center space-x-1.5 px-2.5 py-0.5 rounded shadow-2xl backdrop-blur-md whitespace-nowrap z-20 pointer-events-none transition-all duration-150 ${
+                  isHigh
+                    ? 'bg-black/95 border-2 border-yellow-400 text-yellow-400 font-extrabold shadow-black'
+                    : 'bg-black/90 border border-yellow-400/80 text-yellow-400 font-bold shadow-black'
+                }`}
+              >
+                <span className="font-mono text-xs tracking-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
+                  {bin.label}
                 </span>
-              )}
-              <span
-                className={`font-mono text-xs tracking-tight ${
-                  isActive ? 'text-black font-black' : 'drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]'
-                }`}
-              >
-                {bin.label}
-              </span>
-              <span
-                className={`font-mono text-[10px] font-bold ${
-                  isActive ? 'text-black/80' : 'text-yellow-300 opacity-90'
-                }`}
-              >
-                ({percent}%)
-              </span>
-            </div>
+                <span className="font-mono text-[10px] font-bold text-yellow-300 opacity-90">
+                  ({percent}%)
+                </span>
+              </div>
+            )}
           </div>
         );
       })}
