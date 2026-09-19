@@ -1,16 +1,28 @@
 import json
+import logging
 import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+logger = logging.getLogger(__name__)
+
 
 def get_data_dir() -> Path:
     data_dir = os.getenv("DATA_DIR", "./data")
     path = Path(data_dir)
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "images").mkdir(parents=True, exist_ok=True)
-    (path / "seed_photos").mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "images").mkdir(parents=True, exist_ok=True)
+        (path / "seed_photos").mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        logger.error(
+            "Permission denied creating data directories in %s (uid=%s): %s",
+            path,
+            os.getuid() if hasattr(os, "getuid") else "unknown",
+            e,
+        )
+        raise
     return path
 
 
@@ -19,11 +31,23 @@ def get_db_path() -> Path:
 
 
 def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(get_db_path())
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL;")
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
+    db_path = get_db_path()
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA foreign_keys = ON;")
+        return conn
+    except sqlite3.OperationalError as e:
+        logger.error(
+            "Failed to open or initialize SQLite database at %s (uid=%s, gid=%s): %s. "
+            "Ensure the directory and database file are writable by the current process user.",
+            db_path,
+            os.getuid() if hasattr(os, "getuid") else "unknown",
+            os.getgid() if hasattr(os, "getgid") else "unknown",
+            e,
+        )
+        raise
 
 
 def init_db():
