@@ -1,5 +1,6 @@
-import { FC, useRef, useEffect } from 'react';
+import { FC, useRef, useEffect, useState } from 'react';
 import { Search, X, Plus, Maximize2, Minimize2, Timer } from 'lucide-react';
+import { SpacegrepLogo } from './SpacegrepLogo';
 
 interface FloatingOmnibarProps {
   searchQuery: string;
@@ -33,6 +34,42 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
   onToggleFullscreen,
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [whiteboxLogoUrl, setWhiteboxLogoUrl] = useState<string>(
+    import.meta.env.VITE_WHITEBOX_LOGO_URL || ''
+  );
+  const [whiteboxLinkUrl, setWhiteboxLinkUrl] = useState<string>(
+    import.meta.env.VITE_WHITEBOX_LINK_URL || ''
+  );
+  const [imgError, setImgError] = useState(false);
+
+  // Fetch runtime config from backend
+  useEffect(() => {
+    fetch('/api/config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.whitebox_logo_url) {
+          setWhiteboxLogoUrl(data.whitebox_logo_url);
+        }
+        if (data?.whitebox_link_url) {
+          setWhiteboxLinkUrl(data.whitebox_link_url);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [whiteboxLogoUrl]);
+
+  const [scrollY, setScrollY] = useState(0);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setScrollY(window.scrollY);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   // Global hotkeys: '/' to focus search & highlight term, 'Escape' to clear
   useEffect(() => {
@@ -58,8 +95,61 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
   const hasSearch = searchQuery.trim().length > 0;
 
   return (
-    <header className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[95%] max-w-4xl">
-      <div className="flex items-center justify-between px-3.5 py-2.5 rounded-2xl bg-slate-900/85 backdrop-blur-xl border border-slate-700/80 shadow-2xl shadow-black/60 transition-all duration-300 hover:border-slate-600">
+    <header className="fixed top-4 left-0 right-0 z-50 px-3 sm:px-6 pointer-events-none">
+      <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 sm:gap-4">
+        {/* Left: Whitebox logo & spacegrep logo (scrolls with photos) */}
+        <div
+          className={`flex items-center gap-2.5 sm:gap-3 flex-shrink-0 transition-opacity duration-150 ${
+            scrollY > 60 ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-100'
+          }`}
+          style={{
+            transform: `translateY(-${Math.min(scrollY, 80)}px)`,
+            willChange: 'transform',
+          }}
+        >
+          {/* Farthest left: Whitebox logo (only displayed if whiteboxLogoUrl is set; zero width when empty) */}
+          {Boolean(whiteboxLogoUrl && !imgError) && (
+            whiteboxLinkUrl ? (
+              <a
+                href={whiteboxLinkUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="h-10 sm:h-11 flex items-center drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)] hover:opacity-80 transition-opacity flex-shrink-0"
+                title="Whitebox"
+                aria-label="Whitebox"
+              >
+                <img
+                  src={whiteboxLogoUrl}
+                  alt="Whitebox"
+                  onError={() => setImgError(true)}
+                  className="h-full w-auto max-w-[120px] object-contain"
+                />
+              </a>
+            ) : (
+              <div
+                className="h-10 sm:h-11 flex items-center drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)] flex-shrink-0"
+                title="Whitebox"
+                aria-label="Whitebox"
+              >
+                <img
+                  src={whiteboxLogoUrl}
+                  alt="Whitebox"
+                  onError={() => setImgError(true)}
+                  className="h-full w-auto max-w-[120px] object-contain"
+                />
+              </div>
+            )
+          )}
+
+          {/* Right of Whitebox: spacegrep 'sg' Logo */}
+          <div className="h-10 sm:h-11 flex items-center drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+            <SpacegrepLogo className="h-full w-auto max-w-[72px]" />
+          </div>
+        </div>
+
+        {/* Center: Main Search Omnibar (spans full width between logos) */}
+        <div className="flex-1 min-w-0 pointer-events-auto">
+          <div className="flex items-center justify-between px-3.5 py-2.5 rounded-2xl bg-slate-900/85 backdrop-blur-xl border border-slate-700/80 shadow-2xl shadow-black/60 transition-all duration-300 hover:border-slate-600">
         {/* Left: Search icon & text input */}
         <div className="flex items-center flex-1 space-x-2.5 min-w-0 pr-2">
           <Search className={`w-5 h-5 flex-shrink-0 transition-colors duration-200 ${
@@ -156,6 +246,39 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
           </button>
         </div>
       </div>
-    </header>
+    </div>
+
+    {/* Right: GitHub Project Link (scrolls with photos) */}
+    <div
+      className={`flex items-center flex-shrink-0 transition-opacity duration-150 ${
+        scrollY > 60 ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-100'
+      }`}
+      style={{
+        transform: `translateY(-${Math.min(scrollY, 80)}px)`,
+        willChange: 'transform',
+      }}
+    >
+      <a
+        href="https://github.com/jonmon6691/spacegrep"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-slate-400 hover:text-white transition-all duration-200 hover:scale-110 active:scale-95 flex-shrink-0 drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)] p-1"
+        title="View on GitHub"
+        aria-label="View on GitHub"
+      >
+        <svg
+          role="img"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          className="w-6 h-6"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+        </svg>
+      </a>
+    </div>
+  </div>
+</header>
   );
 };

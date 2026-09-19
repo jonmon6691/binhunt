@@ -71,6 +71,15 @@ def get_inventory_manifest():
     return get_manifest()
 
 
+@app.get("/api/config")
+def get_config():
+    """Returns client configuration such as optional whitebox logo URL and link URL."""
+    return {
+        "whitebox_logo_url": os.getenv("WHITEBOX_LOGO_URL", "") or os.getenv("VITE_WHITEBOX_LOGO_URL", ""),
+        "whitebox_link_url": os.getenv("WHITEBOX_LINK_URL", "") or os.getenv("VITE_WHITEBOX_LINK_URL", ""),
+    }
+
+
 def verify_admin_password(
     x_admin_password_hash: Optional[str] = Header(None, alias="X-Admin-Password-Hash"),
 ) -> None:

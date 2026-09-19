@@ -16,6 +16,8 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - WHITEBOX_LOGO_URL=${WHITEBOX_LOGO_URL:-}
+      - WHITEBOX_LINK_URL=${WHITEBOX_LINK_URL:-}
       - DATA_DIR=/app/data
       - PORT=8000
 

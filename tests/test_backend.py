@@ -123,6 +123,21 @@ def test_api_manifest_and_upload(monkeypatch):
     manifest = manifest_res.json()
     assert any(p["id"] == photo_id for p in manifest)
 
+    # Config (default empty)
+    monkeypatch.delenv("WHITEBOX_LINK_URL", raising=False)
+    monkeypatch.delenv("VITE_WHITEBOX_LINK_URL", raising=False)
+    config_res = client.get("/api/config")
+    assert config_res.status_code == 200
+    config = config_res.json()
+    assert "whitebox_logo_url" in config
+    assert config["whitebox_link_url"] == ""
+
+    # Config (when link URL provided)
+    monkeypatch.setenv("WHITEBOX_LINK_URL", "https://example.com/wiki")
+    config_res2 = client.get("/api/config")
+    assert config_res2.status_code == 200
+    assert config_res2.json()["whitebox_link_url"] == "https://example.com/wiki"
+
     # Delete
     images_dir = get_data_dir() / "images"
     assert (images_dir / f"{photo_id}.jpg").exists()
