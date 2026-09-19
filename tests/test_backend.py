@@ -30,16 +30,18 @@ from backend.ingestion import (
     suppress_duplicate_bins,
 )
 from backend.models import GeminiDetectedBin
-from backend.main import app
+from backend.main import app, _ip_request_timestamps, _failed_login_attempts, generate_admin_token
 from backend.seed import auto_seed, generate_default_sample_shelf_photo
-
 
 
 @pytest.fixture(autouse=True)
 def setup_and_teardown():
     init_db()
+    _ip_request_timestamps.clear()
+    _failed_login_attempts.clear()
     yield
-    # clean up test dir if needed
+    _ip_request_timestamps.clear()
+    _failed_login_attempts.clear()
 
 
 def test_coordinate_normalization():
@@ -89,27 +91,31 @@ def test_api_manifest_and_upload(monkeypatch):
     img.save(buf, format="JPEG")
     img_bytes = buf.getvalue()
 
-    # Upload without password header should fail (401)
+    # Upload without token should fail (401)
     unauth_res = client.post(
         "/api/photos",
         files={"file": ("test_upload.jpg", io.BytesIO(img_bytes), "image/jpeg")},
     )
     assert unauth_res.status_code == 401
 
-    # Upload with invalid password hash should fail (401)
-    invalid_hash_res = client.post(
+    # Upload with invalid token should fail (401)
+    invalid_token_res = client.post(
         "/api/photos",
         files={"file": ("test_upload.jpg", io.BytesIO(img_bytes), "image/jpeg")},
-        headers={"X-Admin-Password-Hash": "invalidhash123"},
+        headers={"Authorization": "Bearer invalidtoken123"},
     )
-    assert invalid_hash_res.status_code == 401
+    assert invalid_token_res.status_code == 401
 
-    # Upload with correct password hash should succeed (201)
-    correct_hash = hashlib.sha256(b"supersecret123").hexdigest()
+    # Login to obtain Bearer token
+    login_res = client.post("/api/auth/login", json={"password": "supersecret123"})
+    assert login_res.status_code == 200
+    token = login_res.json()["token"]
+
+    # Upload with Bearer token should succeed (201)
     upload_res = client.post(
         "/api/photos",
         files={"file": ("test_upload.jpg", io.BytesIO(img_bytes), "image/jpeg")},
-        headers={"X-Admin-Password-Hash": correct_hash},
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert upload_res.status_code == 201
     data = upload_res.json()
@@ -144,21 +150,21 @@ def test_api_manifest_and_upload(monkeypatch):
     assert (images_dir / f"orig_{photo_id}.jpg").exists()
     assert (images_dir / f"thumb_{photo_id}.jpg").exists()
 
-    # Delete without password header should fail (401)
+    # Delete without token should fail (401)
     unauth_del = client.delete(f"/api/photos/{photo_id}")
     assert unauth_del.status_code == 401
 
-    # Delete with invalid password hash should fail (401)
+    # Delete with invalid token should fail (401)
     invalid_del = client.delete(
         f"/api/photos/{photo_id}",
-        headers={"X-Admin-Password-Hash": "wronghash"},
+        headers={"Authorization": "Bearer wrongtoken"},
     )
     assert invalid_del.status_code == 401
 
-    # Delete with correct password hash should succeed (200)
+    # Delete with correct token should succeed (200)
     del_res = client.delete(
         f"/api/photos/{photo_id}",
-        headers={"X-Admin-Password-Hash": correct_hash},
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert del_res.status_code == 200
     assert get_photo(photo_id) is None
@@ -258,5 +264,218 @@ def test_compress_image_to_target():
     import io
     loaded = Image.open(io.BytesIO(data))
     assert max(loaded.size) <= 2048
+
+
+def test_path_traversal_prevention():
+    client = TestClient(app)
+    # Attempt to read .env
+    r1 = client.get("/..%2F..%2F.env")
+    assert r1.status_code == 404
+    assert "GEMINI_API_KEY" not in r1.text
+
+    # Attempt to read SQLite DB
+    r2 = client.get("/..%2F..%2Fdata%2Finventory.db")
+    assert r2.status_code == 404
+
+
+def test_cors_isolation():
+    client = TestClient(app)
+    # Evil origin should not be reflected
+    r = client.get("/api/manifest", headers={"Origin": "https://evil.com"})
+    assert r.headers.get("access-control-allow-origin") != "https://evil.com"
+
+    # Permitted origin should be allowed
+    r2 = client.get("/api/manifest", headers={"Origin": "http://localhost:5173"})
+    assert r2.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+def test_security_headers():
+    client = TestClient(app)
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.headers.get("x-content-type-options") == "nosniff"
+    assert r.headers.get("x-frame-options") == "SAMEORIGIN"
+    assert r.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+
+def test_upload_size_limit(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "supersecret123")
+    client = TestClient(app)
+
+    # Login to obtain token
+    login_res = client.post("/api/auth/login", json={"password": "supersecret123"})
+    assert login_res.status_code == 200
+    token = login_res.json()["token"]
+
+    # Create dummy data exceeding 25MB (26MB dummy bytes)
+    oversized = b"x" * (26 * 1024 * 1024)
+    import io
+    r = client.post(
+        "/api/photos",
+        files={"file": ("huge.jpg", io.BytesIO(oversized), "image/jpeg")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 413
+    assert "exceeds" in r.json()["detail"].lower()
+
+
+def test_admin_rate_limiting(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "supersecret123")
+    client = TestClient(app)
+
+    # Login to obtain token
+    login_res = client.post("/api/auth/login", json={"password": "supersecret123"})
+    assert login_res.status_code == 200
+    token = login_res.json()["token"]
+
+    # 10 requests should succeed or return valid status (e.g. 404 for non-existent photo)
+    for i in range(10):
+        r = client.delete(
+            f"/api/photos/non-existent-{i}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code in (404, 200)
+
+    # 11th request should be rate-limited (429)
+    r_blocked = client.delete(
+        "/api/photos/non-existent-11",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r_blocked.status_code == 429
+    assert "rate limit exceeded" in r_blocked.json()["detail"].lower()
+
+
+def test_image_dimension_safety():
+    # Attempting to process an image exceeding 10,000x10,000 should raise ValueError
+    huge_img = Image.new("RGB", (10001, 100))
+    import io
+    buf = io.BytesIO()
+    huge_img.save(buf, format="JPEG")
+    with pytest.raises(ValueError) as exc_info:
+        process_image(buf.getvalue(), original_name="huge.jpg")
+    assert "exceed maximum allowed limit" in str(exc_info.value)
+
+
+def test_login_success_and_token_structure(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "correct_pass_99")
+    client = TestClient(app)
+
+    res = client.post("/api/auth/login", json={"password": "correct_pass_99"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "token" in data
+    assert data["token_type"] == "bearer"
+    assert data["expires_in"] == 3600
+
+    token = data["token"]
+    parts = token.split(".")
+    assert len(parts) == 2
+
+
+def test_login_invalid_password(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "correct_pass_99")
+    client = TestClient(app)
+
+    res = client.post("/api/auth/login", json={"password": "wrong_password"})
+    assert res.status_code == 401
+    assert "invalid admin password" in res.json()["detail"].lower()
+
+
+def test_login_rate_limiting(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "correct_pass_99")
+    client = TestClient(app)
+
+    # First 5 failed attempts return 401
+    for i in range(5):
+        res = client.post("/api/auth/login", json={"password": f"wrong_{i}"})
+        assert res.status_code == 401
+
+    # 6th attempt is rate-limited (429)
+    res_blocked = client.post("/api/auth/login", json={"password": "wrong_6"})
+    assert res_blocked.status_code == 429
+    assert "too many failed login attempts" in res_blocked.json()["detail"].lower()
+
+
+def test_token_tampering_and_expiration(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "correct_pass_99")
+    client = TestClient(app)
+
+    # Tampered signature
+    tampered = "eyJyb2xlIjoiYWRtaW4ifQ.invalidsignature123"
+    r = client.delete(
+        "/api/photos/some-id",
+        headers={"Authorization": f"Bearer {tampered}"},
+    )
+    assert r.status_code == 401
+    assert "signature" in r.json()["detail"].lower()
+
+    # Expired token
+    expired_token = generate_admin_token(expires_in=-10)
+    r_exp = client.delete(
+        "/api/photos/some-id",
+        headers={"Authorization": f"Bearer {expired_token}"},
+    )
+    assert r_exp.status_code == 401
+    assert "expired" in r_exp.json()["detail"].lower()
+
+
+def test_legacy_header_rejected(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "correct_pass_99")
+    client = TestClient(app)
+    legacy_hash = hashlib.sha256(b"correct_pass_99").hexdigest()
+
+    # Legacy header without Bearer token should be rejected (401)
+    r = client.delete(
+        "/api/photos/some-id",
+        headers={"X-Admin-Password-Hash": legacy_hash},
+    )
+    assert r.status_code == 401
+    assert "bearer token required" in r.json()["detail"].lower()
+
+
+def test_login_fails_when_admin_password_unset_or_blank(monkeypatch):
+    client = TestClient(app)
+
+    # 1. ADMIN_PASSWORD unset
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    r1 = client.post("/api/auth/login", json={"password": ""})
+    assert r1.status_code == 401
+    assert "admin login is disabled" in r1.json()["detail"].lower()
+
+    r1_any = client.post("/api/auth/login", json={"password": "anypassword"})
+    assert r1_any.status_code == 401
+
+    # 2. ADMIN_PASSWORD empty string
+    monkeypatch.setenv("ADMIN_PASSWORD", "")
+    r2 = client.post("/api/auth/login", json={"password": ""})
+    assert r2.status_code == 401
+    assert "admin login is disabled" in r2.json()["detail"].lower()
+
+    # 3. ADMIN_PASSWORD whitespace only
+    monkeypatch.setenv("ADMIN_PASSWORD", "   \t  ")
+    r3 = client.post("/api/auth/login", json={"password": "   \t  "})
+    assert r3.status_code == 401
+    assert "admin login is disabled" in r3.json()["detail"].lower()
+
+
+def test_verify_token_fails_when_admin_password_unset_or_blank(monkeypatch):
+    client = TestClient(app)
+    # Generate token while password was valid
+    monkeypatch.setenv("ADMIN_PASSWORD", "valid_secret_password")
+    token = generate_admin_token()
+
+    # Now simulate ADMIN_PASSWORD becoming unset or blank
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    r_unset = client.delete("/api/photos/some-id", headers={"Authorization": f"Bearer {token}"})
+    assert r_unset.status_code == 403
+    assert "admin operations are disabled" in r_unset.json()["detail"].lower()
+
+    monkeypatch.setenv("ADMIN_PASSWORD", "   ")
+    r_blank = client.delete("/api/photos/some-id", headers={"Authorization": f"Bearer {token}"})
+    assert r_blank.status_code == 403
+    assert "admin operations are disabled" in r_blank.json()["detail"].lower()
+
+
+
 
 

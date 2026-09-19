@@ -2,6 +2,16 @@ import { FC, useRef, useEffect, useState } from 'react';
 import { Search, X, Plus, Maximize2, Minimize2, Timer } from 'lucide-react';
 import { SpacegrepLogo } from './SpacegrepLogo';
 
+function isSafeUrl(url: string): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url, window.location.origin);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 interface FloatingOmnibarProps {
   searchQuery: string;
   onSearchChange: (q: string) => void;
@@ -109,7 +119,7 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
         >
           {/* Farthest left: Whitebox logo (only displayed if whiteboxLogoUrl is set; zero width when empty) */}
           {Boolean(whiteboxLogoUrl && !imgError) && (
-            whiteboxLinkUrl ? (
+            whiteboxLinkUrl && isSafeUrl(whiteboxLinkUrl) ? (
               <a
                 href={whiteboxLinkUrl}
                 target="_blank"

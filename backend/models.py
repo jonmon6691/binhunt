@@ -49,3 +49,14 @@ class SearchResult(BaseModel):
     label: str
     score: float
     confidence_tier: str  # "high" (>= 0.70) or "moderate" (0.50 - 0.69)
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    token_type: str = "bearer"
+    expires_in: int
+

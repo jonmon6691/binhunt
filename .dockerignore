@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+*.local
+*.log
+data/images
+data/inventory.db*
+frontend/node_modules
+frontend/dist
+.venv
+__pycache__
+.pytest_cache

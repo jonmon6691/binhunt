@@ -10,12 +10,26 @@ interface UploadModalProps {
   onDeleteSuccess: (photoId: string) => void;
 }
 
-async function hashPassword(password: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+const TOKEN_STORAGE_KEY = 'spacegrep_admin_token';
+
+function getStoredToken(): string | null {
+  try {
+    return sessionStorage.getItem(TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setStoredToken(token: string): void {
+  try {
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } catch {}
+}
+
+function clearStoredToken(): void {
+  try {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {}
 }
 
 export const UploadModal: React.FC<UploadModalProps> = ({
@@ -41,6 +55,90 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
   if (!isOpen) return null;
 
+  const executeUpload = async (file: File, token: string) => {
+    setIsUploading(true);
+    setPasswordError('');
+    setUploadStatus('Uploading shelf image...');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      setUploadStatus('Analyzing shelf with Vision AI (detecting bins & labels)...');
+      const res = await fetch('/api/photos', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          clearStoredToken();
+          setPendingFile(file);
+          setPasswordError('Admin session expired. Please enter password again.');
+          setIsUploading(false);
+          setUploadStatus('');
+          return;
+        }
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Upload and vision ingestion failed');
+      }
+
+      setUploadStatus('Saving records...');
+      const data = await res.json();
+      onUploadSuccess(data.photo);
+      setUploadStatus('Ingestion complete!');
+      setTimeout(() => {
+        setIsUploading(false);
+        setUploadStatus('');
+        setPendingFile(null);
+        setPasswordInput('');
+      }, 1200);
+    } catch (err: any) {
+      console.error('Upload error:', err);
+      setPasswordError(err.message || 'An error occurred during ingestion.');
+      setIsUploading(false);
+      setUploadStatus('');
+    }
+  };
+
+  const executeDelete = async (photo: Photo, token: string) => {
+    setIsDeleting(true);
+    setPasswordError('');
+
+    try {
+      const res = await fetch(`/api/photos/${photo.id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          clearStoredToken();
+          setPendingDeletePhoto(photo);
+          setPasswordError('Admin session expired. Please enter password again.');
+          setIsDeleting(false);
+          return;
+        }
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to delete photo');
+      }
+
+      onDeleteSuccess(photo.id);
+      setPendingDeletePhoto(null);
+      setPasswordInput('');
+    } catch (err: any) {
+      console.error('Delete error:', err);
+      setPasswordError(err.message || 'An error occurred while deleting.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const selectFileForUpload = (file: File) => {
     if (!file.type.startsWith('image/')) {
       setErrorMessage('Please select a valid image file (JPEG, PNG, or WebP).');
@@ -50,7 +148,13 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     setPasswordError('');
     setPasswordInput('');
     setPendingDeletePhoto(null);
-    setPendingFile(file);
+
+    const token = getStoredToken();
+    if (token) {
+      executeUpload(file, token);
+    } else {
+      setPendingFile(file);
+    }
   };
 
   const requestDelete = (photo: Photo) => {
@@ -58,7 +162,13 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     setPasswordError('');
     setPasswordInput('');
     setPendingFile(null);
-    setPendingDeletePhoto(photo);
+
+    const token = getStoredToken();
+    if (token) {
+      executeDelete(photo, token);
+    } else {
+      setPendingDeletePhoto(photo);
+    }
   };
 
   const cancelPasswordPrompt = () => {
@@ -72,86 +182,51 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     e.preventDefault();
     if (!passwordInput.trim()) return;
 
-    if (pendingFile) {
-      setIsUploading(true);
+    try {
+      if (pendingFile) {
+        setIsUploading(true);
+        setUploadStatus('Authenticating admin password...');
+      } else if (pendingDeletePhoto) {
+        setIsDeleting(true);
+      }
       setPasswordError('');
-      setUploadStatus('Hashing admin password...');
 
-      try {
-        const passwordHash = await hashPassword(passwordInput);
+      const loginRes = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password: passwordInput }),
+      });
 
-        setUploadStatus('Uploading shelf image...');
-        const formData = new FormData();
-        formData.append('file', pendingFile);
-
-        setUploadStatus('Analyzing shelf with Vision AI (detecting bins & labels)...');
-        const res = await fetch('/api/photos', {
-          method: 'POST',
-          headers: {
-            'X-Admin-Password-Hash': passwordHash,
-          },
-          body: formData,
-        });
-
-        if (!res.ok) {
-          const errorData = await res.json().catch(() => ({}));
-          if (res.status === 401) {
-            setPasswordError(errorData.detail || 'Invalid admin password. Please try again.');
-            setIsUploading(false);
-            setUploadStatus('');
-            return;
-          }
-          throw new Error(errorData.detail || 'Upload and vision ingestion failed');
+      if (!loginRes.ok) {
+        const errorData = await loginRes.json().catch(() => ({}));
+        if (loginRes.status === 429) {
+          setPasswordError(errorData.detail || 'Too many failed attempts. Please wait 5 minutes.');
+        } else {
+          setPasswordError(errorData.detail || 'Invalid admin password. Please try again.');
         }
-
-        setUploadStatus('Saving records...');
-        const data = await res.json();
-        onUploadSuccess(data.photo);
-        setUploadStatus('Ingestion complete!');
-        setTimeout(() => {
-          setIsUploading(false);
-          setUploadStatus('');
-          setPendingFile(null);
-          setPasswordInput('');
-        }, 1200);
-      } catch (err: any) {
-        console.error('Upload error:', err);
-        setPasswordError(err.message || 'An error occurred during ingestion.');
         setIsUploading(false);
-        setUploadStatus('');
-      }
-    } else if (pendingDeletePhoto) {
-      setIsDeleting(true);
-      setPasswordError('');
-
-      try {
-        const passwordHash = await hashPassword(passwordInput);
-        const res = await fetch(`/api/photos/${pendingDeletePhoto.id}`, {
-          method: 'DELETE',
-          headers: {
-            'X-Admin-Password-Hash': passwordHash,
-          },
-        });
-
-        if (!res.ok) {
-          const errorData = await res.json().catch(() => ({}));
-          if (res.status === 401) {
-            setPasswordError(errorData.detail || 'Invalid admin password. Please try again.');
-            setIsDeleting(false);
-            return;
-          }
-          throw new Error(errorData.detail || 'Failed to delete photo');
-        }
-
-        onDeleteSuccess(pendingDeletePhoto.id);
-        setPendingDeletePhoto(null);
-        setPasswordInput('');
-      } catch (err: any) {
-        console.error('Delete error:', err);
-        setPasswordError(err.message || 'An error occurred while deleting.');
-      } finally {
         setIsDeleting(false);
+        setUploadStatus('');
+        return;
       }
+
+      const loginData = await loginRes.json();
+      const token = loginData.token;
+      setStoredToken(token);
+
+      if (pendingFile) {
+        await executeUpload(pendingFile, token);
+      } else if (pendingDeletePhoto) {
+        await executeDelete(pendingDeletePhoto, token);
+      }
+    } catch (err: any) {
+      console.error('Authentication error:', err);
+      setPasswordError(err.message || 'Authentication failed');
+      setIsUploading(false);
+      setIsDeleting(false);
+      setUploadStatus('');
     }
   };
 
@@ -352,7 +427,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                       <span className="text-slate-500">File:</span> {pendingFile?.name}
                     </p>
                     <p className="text-[11px] text-slate-400 mt-1">
-                      Password is set in <code className="text-cyan-300 font-mono">.env</code> and hashed on the client before transmission.
+                      Password is set in <code className="text-cyan-300 font-mono">.env</code> and grants a 1-hour Bearer token session.
                     </p>
                   </>
                 )}

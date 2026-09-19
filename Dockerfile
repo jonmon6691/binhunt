@@ -33,8 +33,13 @@ COPY --from=frontend-builder /build/dist /app/static
 # Copy backend application code
 COPY backend/ /app/backend/
 
-# Create default data directories
-RUN mkdir -p /app/data/images /app/data/seed_photos
+# Create default data directories and set permissions for non-root user
+RUN mkdir -p /app/data/images /app/data/seed_photos \
+    && groupadd -r -g 10001 appuser \
+    && useradd -r -u 10001 -g appuser -d /app -s /sbin/nologin appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
 
 ENV DATA_DIR=/app/data
 ENV PORT=8000

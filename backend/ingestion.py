@@ -466,6 +466,12 @@ def process_image(
         image = image.convert("RGB")
 
     orig_width, orig_height = image.size
+    MAX_IMAGE_DIMENSION = 10000
+    if orig_width > MAX_IMAGE_DIMENSION or orig_height > MAX_IMAGE_DIMENSION:
+        raise ValueError(
+            f"Image dimensions ({orig_width}x{orig_height}) exceed maximum allowed limit of {MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION}"
+        )
+
     photo_id = str(uuid.uuid4())
     filename = f"{photo_id}.jpg"
     orig_filename = f"orig_{photo_id}.jpg"
