@@ -217,7 +217,51 @@ export function App() {
     }
   }, [handleSearchChange]);
 
-  // Global hotkeys for 'q' (reset), 'n' (next match), and 'N' (prev match) like vi/less
+  // Scroll to the next or previous shelf image boundary, offset below the floating omnibar
+  const scrollToShelfBoundary = useCallback(
+    (direction: 'next' | 'prev') => {
+      if (photos.length === 0) return;
+
+      const TOP_NAV_OFFSET = 80;
+      const SCROLL_TOLERANCE = 10;
+
+      // Collect target scroll positions for each shelf card in visual sequence
+      const targets: number[] = [];
+      for (const photo of photos) {
+        const cardEl = cardRefs.current.get(photo.id);
+        if (cardEl) {
+          const rect = cardEl.getBoundingClientRect();
+          const cardAbsoluteTop = window.scrollY + rect.top;
+          targets.push(Math.max(0, cardAbsoluteTop - TOP_NAV_OFFSET));
+        }
+      }
+
+      if (targets.length === 0) return;
+
+      const currentY = window.scrollY;
+
+      if (direction === 'next') {
+        const nextTarget = targets.find((t) => t > currentY + SCROLL_TOLERANCE);
+        window.scrollTo({
+          top: nextTarget !== undefined ? nextTarget : targets[0],
+          behavior: 'smooth',
+        });
+      } else {
+        // Snaps to the top of current shelf if scrolled partway down,
+        // otherwise jumps to the previous shelf, or wraps to the last shelf.
+        const prevTargets = targets.filter((t) => t < currentY - SCROLL_TOLERANCE);
+        const prevTarget =
+          prevTargets.length > 0 ? prevTargets[prevTargets.length - 1] : targets[targets.length - 1];
+        window.scrollTo({
+          top: prevTarget,
+          behavior: 'smooth',
+        });
+      }
+    },
+    [photos]
+  );
+
+  // Global hotkeys for 'q' (reset), 'n' (next match), 'N' (prev match), and 'Space'/'Shift+Space' (image boundaries)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isUploadOpen) return;
@@ -243,12 +287,15 @@ export function App() {
       ) {
         e.preventDefault();
         cycleMatch('prev');
+      } else if ((e.key === ' ' || e.code === 'Space') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        scrollToShelfBoundary(e.shiftKey ? 'prev' : 'next');
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isUploadOpen, resetKiosk, cycleMatch]);
+  }, [isUploadOpen, resetKiosk, cycleMatch, scrollToShelfBoundary]);
 
   // Keep activeMatchIndex in bounds if results update
   useEffect(() => {

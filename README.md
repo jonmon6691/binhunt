@@ -109,6 +109,8 @@ There are two easy ways to add photos of your workshop shelves:
 | `Enter` | Search Bar | Defocus search and smoothly center the first or active match |
 | `n` | Global (outside search) | Cycle to the next matching bin and center it (vi/less style) |
 | `N` / `Shift + n` | Global (outside search) | Cycle to the previous matching bin and center it (vi/less style) |
+| `Space` | Global (outside search) | Smoothly scroll to the next shelf image boundary below the search bar |
+| `Shift + Space` | Global (outside search) | Smoothly scroll to the previous shelf image boundary (or snap to top of current) |
 | `q` / `Q` | Global (outside search) | Quick reset: clear search, scroll to top, and reset kiosk timer |
 
 *(Tip: You can also click any off-screen **Radar Arrow** indicator or shelf match badge to smoothly scroll and center that bin).*
