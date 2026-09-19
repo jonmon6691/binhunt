@@ -19,9 +19,19 @@ from backend.database import (
     insert_bin,
     insert_photo,
 )
-from backend.ingestion import normalize_box, process_image
+from backend.ingestion import (
+    calculate_iou,
+    compress_image_to_target,
+    generate_tiles,
+    normalize_box,
+    process_image,
+    project_box_to_global,
+    suppress_duplicate_bins,
+)
+from backend.models import GeminiDetectedBin
 from backend.main import app
 from backend.seed import auto_seed, generate_default_sample_shelf_photo
+
 
 
 @pytest.fixture(autouse=True)
@@ -95,9 +105,17 @@ def test_api_manifest_and_upload(monkeypatch):
     assert any(p["id"] == photo_id for p in manifest)
 
     # Delete
+    images_dir = get_data_dir() / "images"
+    assert (images_dir / f"{photo_id}.jpg").exists()
+    assert (images_dir / f"orig_{photo_id}.jpg").exists()
+    assert (images_dir / f"thumb_{photo_id}.jpg").exists()
+
     del_res = client.delete(f"/api/photos/{photo_id}")
     assert del_res.status_code == 200
     assert get_photo(photo_id) is None
+    assert not (images_dir / f"{photo_id}.jpg").exists()
+    assert not (images_dir / f"orig_{photo_id}.jpg").exists()
+    assert not (images_dir / f"thumb_{photo_id}.jpg").exists()
 
 
 def test_auto_seed_creates_sample_if_empty():
@@ -109,4 +127,87 @@ def test_auto_seed_creates_sample_if_empty():
     # Running auto_seed again should be idempotent (0 new ingested)
     count_second = auto_seed()
     assert count_second == 0
+
+
+def test_generate_tiles():
+    # Small image: should return exactly 1 tile
+    small_img = Image.new("RGB", (800, 600))
+    small_tiles = generate_tiles(small_img)
+    assert len(small_tiles) == 1
+    assert small_tiles[0][1] == (0, 0, 800, 600)
+
+    # Large image: 4080x3072
+    large_img = Image.new("RGB", (4080, 3072))
+    large_tiles = generate_tiles(large_img, overlap_ratio=0.20)
+    assert len(large_tiles) >= 4
+
+    # Verify each tile is within bounds
+    for tile_img, (left, top, right, bottom) in large_tiles:
+        assert 0 <= left < right <= 4080
+        assert 0 <= top < bottom <= 3072
+        assert tile_img.size == (right - left, bottom - top)
+
+
+def test_project_box_to_global():
+    # Box in a tile: tile is (1000, 1000, 3000, 3000) on a 4000x4000 image
+    tile_rect = (1000, 1000, 3000, 3000)
+    # Box inside tile: top-left quadrant of tile: ymin=0, xmin=0, ymax=500, xmax=500
+    tile_box = [0, 0, 500, 500]
+    global_box = project_box_to_global(tile_box, tile_rect, orig_w=4000, orig_h=4000)
+    # tile_w = 2000, tile_h = 2000
+    # abs_ymin = 1000 + 0 = 1000 -> 1000/4000 * 1000 = 250
+    # abs_xmin = 1000 + 0 = 1000 -> 1000/4000 * 1000 = 250
+    # abs_ymax = 1000 + 1000 = 2000 -> 2000/4000 * 1000 = 500
+    # abs_xmax = 1000 + 1000 = 2000 -> 2000/4000 * 1000 = 500
+    assert global_box == [250, 250, 500, 500]
+
+
+def test_calculate_iou_and_nms():
+    box_a = [100, 100, 300, 300]
+    box_b = [100, 100, 300, 300]  # Identical
+    box_c = [500, 500, 700, 700]  # Disjoint
+    box_d = [150, 150, 350, 350]  # Partial overlap
+
+    assert calculate_iou(box_a, box_b) == 1.0
+    assert calculate_iou(box_a, box_c) == 0.0
+    assert 0.2 < calculate_iou(box_a, box_d) < 0.6
+
+    bin1 = GeminiDetectedBin(
+        box_2d=[100, 100, 300, 300],
+        label="CR2032 Battery",
+        semantic_tags=["battery", "coin cell"],
+    )
+    bin2 = GeminiDetectedBin(
+        box_2d=[105, 102, 305, 302],
+        label="CR2032 3V Coin Cell Battery",  # More descriptive
+        semantic_tags=["3v", "cmos"],
+    )
+    bin_distinct = GeminiDetectedBin(
+        box_2d=[600, 600, 800, 800],
+        label="ESP32 Board",
+        semantic_tags=["microcontroller"],
+    )
+
+    merged = suppress_duplicate_bins([bin1, bin2, bin_distinct], iou_threshold=0.40)
+    assert len(merged) == 2
+    # Check that the more descriptive label was kept
+    labels = [b.label for b in merged]
+    assert "CR2032 3V Coin Cell Battery" in labels
+    assert "ESP32 Board" in labels
+    # Check combined tags
+    battery_bin = next(b for b in merged if "CR2032" in b.label)
+    assert set(battery_bin.semantic_tags) >= {"battery", "coin cell", "3v", "cmos"}
+
+
+def test_compress_image_to_target():
+    # Large test image: 3000x2000 with pattern
+    img = Image.new("RGB", (3000, 2000), color=(120, 140, 180))
+    data = compress_image_to_target(img, target_bytes=500 * 1024, max_dim=2048)
+    # File size must be under 520kB
+    assert len(data) <= 520 * 1024
+    # Valid JPEG
+    import io
+    loaded = Image.open(io.BytesIO(data))
+    assert max(loaded.size) <= 2048
+
 

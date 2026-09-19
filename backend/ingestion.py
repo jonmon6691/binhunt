@@ -3,13 +3,16 @@ load_dotenv()
 
 import json
 import logging
+import math
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageOps
+
 
 from backend.database import (
     get_data_dir,
@@ -34,6 +37,216 @@ def normalize_box(box_2d: List[int]) -> List[float]:
     return [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]
 
 
+def compress_image_to_target(
+    image: Image.Image,
+    target_bytes: int = 500 * 1024,
+    max_dim: int = 2048,
+) -> bytes:
+    """
+    Compresses image to approximately target_bytes (~500kB) while maintaining high visual clarity.
+    Downscales so max(width, height) <= max_dim, then binary-searches JPEG quality.
+    """
+    w, h = image.size
+    if max(w, h) > max_dim:
+        scale = max_dim / max(w, h)
+        img = image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+    else:
+        img = image.copy()
+
+    # Binary search for optimal JPEG quality (range 30 to 95)
+    low_q, high_q = 30, 95
+    best_data = None
+
+    for _ in range(7):
+        mid_q = (low_q + high_q) // 2
+        buf = BytesIO()
+        img.save(buf, "JPEG", quality=mid_q, optimize=True)
+        data = buf.getvalue()
+        if len(data) <= target_bytes:
+            best_data = data
+            low_q = mid_q + 1
+        else:
+            high_q = mid_q - 1
+
+    if best_data is None:
+        # If even at low_q the image is too large, downscale slightly and save at reasonable quality
+        scale = 0.8
+        img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))), Image.Resampling.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, "JPEG", quality=65, optimize=True)
+        best_data = buf.getvalue()
+
+    return best_data
+
+
+def generate_tiles(
+    image: Image.Image,
+    overlap_ratio: float = 0.20,
+) -> List[Tuple[Image.Image, Tuple[int, int, int, int]]]:
+    """
+    Slices an image into overlapping tiles for SAHI-style inference.
+    Returns a list of (tile_image, (tile_left, tile_top, tile_right, tile_bottom))
+    where the bounding tuple is in original image pixel coordinates.
+    """
+    w, h = image.size
+    if max(w, h) <= 1500:
+        return [(image.copy(), (0, 0, w, h))]
+
+    # Determine grid division based on dimensions and aspect ratio
+    cols = 2 if w > 1500 else 1
+    rows = 2 if h > 1500 else 1
+    if w / h >= 1.7:
+        cols = 3
+    elif h / w >= 1.7:
+        rows = 3
+
+    # If only 1 tile would be created despite large dimensions, force 2
+    if cols == 1 and rows == 1:
+        if w >= h:
+            cols = 2
+        else:
+            rows = 2
+
+    # Calculate tile size with overlap
+    col_w = int(round(w / (cols - (cols - 1) * overlap_ratio))) if cols > 1 else w
+    row_h = int(round(h / (rows - (rows - 1) * overlap_ratio))) if rows > 1 else h
+
+    # Clamp tile dimensions to image bounds
+    col_w = min(w, max(1, col_w))
+    row_h = min(h, max(1, row_h))
+
+    tiles = []
+    x_step = int(round(col_w * (1.0 - overlap_ratio))) if cols > 1 else w
+    y_step = int(round(row_h * (1.0 - overlap_ratio))) if rows > 1 else h
+
+    for r in range(rows):
+        top = r * y_step
+        bottom = min(h, top + row_h)
+        if r == rows - 1:
+            bottom = h
+            top = max(0, bottom - row_h)
+
+        for c in range(cols):
+            left = c * x_step
+            right = min(w, left + col_w)
+            if c == cols - 1:
+                right = w
+                left = max(0, right - col_w)
+
+            tile_img = image.crop((left, top, right, bottom))
+            tiles.append((tile_img, (left, top, right, bottom)))
+
+    return tiles
+
+
+def project_box_to_global(
+    box_2d: List[int],
+    tile_rect: Tuple[int, int, int, int],
+    orig_w: int,
+    orig_h: int,
+) -> List[int]:
+    """
+    Translates a bounding box [ymin, xmin, ymax, xmax] (0 to 1000 in tile space)
+    into global image coordinates [ymin, xmin, ymax, xmax] (0 to 1000 in original image space).
+    """
+    tile_left, tile_top, tile_right, tile_bottom = tile_rect
+    tile_w = tile_right - tile_left
+    tile_h = tile_bottom - tile_top
+
+    b_ymin, b_xmin, b_ymax, b_xmax = box_2d
+
+    abs_ymin = tile_top + (b_ymin / 1000.0) * tile_h
+    abs_xmin = tile_left + (b_xmin / 1000.0) * tile_w
+    abs_ymax = tile_top + (b_ymax / 1000.0) * tile_h
+    abs_xmax = tile_left + (b_xmax / 1000.0) * tile_w
+
+    g_ymin = max(0, min(1000, int(round((abs_ymin / orig_h) * 1000))))
+    g_xmin = max(0, min(1000, int(round((abs_xmin / orig_w) * 1000))))
+    g_ymax = max(0, min(1000, int(round((abs_ymax / orig_h) * 1000))))
+    g_xmax = max(0, min(1000, int(round((abs_xmax / orig_w) * 1000))))
+
+    return [g_ymin, g_xmin, g_ymax, g_xmax]
+
+
+def calculate_iou(box1: List[int], box2: List[int]) -> float:
+    """
+    Calculates Intersection over Union (IoU) between two boxes in [ymin, xmin, ymax, xmax] format.
+    """
+    y1_min, x1_min, y1_max, x1_max = box1
+    y2_min, x2_min, y2_max, x2_max = box2
+
+    inter_ymin = max(y1_min, y2_min)
+    inter_xmin = max(x1_min, x2_min)
+    inter_ymax = min(y1_max, y2_max)
+    inter_xmax = min(x1_max, x2_max)
+
+    inter_w = max(0, inter_xmax - inter_xmin)
+    inter_h = max(0, inter_ymax - inter_ymin)
+    inter_area = inter_w * inter_h
+
+    area1 = max(0, x1_max - x1_min) * max(0, y1_max - y1_min)
+    area2 = max(0, x2_max - x2_min) * max(0, y2_max - y2_min)
+    union_area = area1 + area2 - inter_area
+
+    if union_area <= 0:
+        return 0.0
+    return inter_area / union_area
+
+
+def suppress_duplicate_bins(
+    bins: List[GeminiDetectedBin],
+    iou_threshold: float = 0.40,
+) -> List[GeminiDetectedBin]:
+    """
+    Applies Non-Maximum Suppression (NMS) / deduplication on detected bins.
+    When two boxes overlap with IoU >= iou_threshold, they are merged:
+    - Retains the more specific label.
+    - Combines unique semantic tags.
+    - Uses the average bounding box.
+    """
+    if not bins:
+        return []
+
+    def box_area(b: GeminiDetectedBin) -> int:
+        ymin, xmin, ymax, xmax = b.box_2d
+        return (ymax - ymin) * (xmax - xmin)
+
+    sorted_bins = sorted(bins, key=box_area, reverse=True)
+    merged_bins: List[GeminiDetectedBin] = []
+
+    for candidate in sorted_bins:
+        matched = False
+        for i, existing in enumerate(merged_bins):
+            iou = calculate_iou(candidate.box_2d, existing.box_2d)
+            if iou >= iou_threshold:
+                chosen_label = existing.label
+                if len(candidate.label.strip()) > len(existing.label.strip()):
+                    chosen_label = candidate.label
+
+                combined_tags = list(dict.fromkeys(existing.semantic_tags + candidate.semantic_tags))
+
+                avg_box = [
+                    int(round((existing.box_2d[0] + candidate.box_2d[0]) / 2)),
+                    int(round((existing.box_2d[1] + candidate.box_2d[1]) / 2)),
+                    int(round((existing.box_2d[2] + candidate.box_2d[2]) / 2)),
+                    int(round((existing.box_2d[3] + candidate.box_2d[3]) / 2)),
+                ]
+
+                merged_bins[i] = GeminiDetectedBin(
+                    box_2d=avg_box,
+                    label=chosen_label,
+                    semantic_tags=combined_tags,
+                )
+                matched = True
+                break
+
+        if not matched:
+            merged_bins.append(candidate)
+
+    return merged_bins
+
+
+
 def detect_bins_with_gemini(
     image_bytes: bytes,
     api_key: str,
@@ -49,6 +262,8 @@ def detect_bins_with_gemini(
         "You are an inventory detection system for an electronics workshop / hackerspace.\n"
         "Carefully examine this shelf or organizer photo. Identify every storage bin, box, drawer, container, "
         "and tub that has visible labels, part numbers, or identifiable tools/components.\n"
+        "Scan systematically row-by-row from top to bottom, and left-to-right within each row.\n"
+        "Do not skip or omit drawers.\n"
         "For each detected item, provide:\n"
         "1. box_2d: normalized coordinates [ymin, xmin, ymax, xmax] scaled 0 to 1000 tightly bounding the bin, drawer, or container\n"
         "2. label: exact transcribed text from the bin's label or visible component name\n"
@@ -100,6 +315,68 @@ def detect_bins_with_gemini(
             last_error = e
 
     raise RuntimeError(f"All candidate Gemini models failed. Last error: {last_error}")
+
+
+def detect_bins_tiled(
+    image: Image.Image,
+    api_key: str,
+    model_name: Optional[str] = None,
+    max_workers: int = 4,
+) -> List[GeminiDetectedBin]:
+    """
+    Divides image into overlapping tiles, runs Gemini Flash detection in parallel,
+    projects tile-relative coordinates to global coordinates, and applies NMS.
+    """
+    orig_w, orig_h = image.size
+    tiles = generate_tiles(image)
+    logger.info("Generated %d tiles for image of size %dx%d", len(tiles), orig_w, orig_h)
+
+    def process_tile(tile_item: Tuple[Image.Image, Tuple[int, int, int, int]]) -> List[GeminiDetectedBin]:
+        tile_img, tile_rect = tile_item
+        buf = BytesIO()
+        tile_img.save(buf, "JPEG", quality=88)
+        tile_bytes = buf.getvalue()
+
+        tile_detections = detect_bins_with_gemini(
+            image_bytes=tile_bytes,
+            api_key=api_key,
+            model_name=model_name,
+        )
+
+        projected: List[GeminiDetectedBin] = []
+        for d in tile_detections:
+            global_box = project_box_to_global(d.box_2d, tile_rect, orig_w, orig_h)
+            projected.append(
+                GeminiDetectedBin(
+                    box_2d=global_box,
+                    label=d.label,
+                    semantic_tags=d.semantic_tags,
+                )
+            )
+        return projected
+
+    all_detections: List[GeminiDetectedBin] = []
+    if len(tiles) == 1:
+        all_detections = process_tile(tiles[0])
+    else:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(tiles))) as executor:
+            future_to_tile = [executor.submit(process_tile, t) for t in tiles]
+            for future in as_completed(future_to_tile):
+                try:
+                    tile_results = future.result()
+                    all_detections.extend(tile_results)
+                except Exception as e:
+                    logger.warning("Error processing tile in parallel: %s", e)
+
+    deduped = suppress_duplicate_bins(all_detections, iou_threshold=0.40)
+    logger.info(
+        "Tiled detection complete: %d raw detections across %d tiles -> %d deduped bins",
+        len(all_detections),
+        len(tiles),
+        len(deduped),
+    )
+    return deduped
+
 
 
 def mock_detect_bins(width: int, height: int, filename: str = "") -> List[GeminiDetectedBin]:
@@ -190,13 +467,21 @@ def process_image(
     orig_width, orig_height = image.size
     photo_id = str(uuid.uuid4())
     filename = f"{photo_id}.jpg"
+    orig_filename = f"orig_{photo_id}.jpg"
     thumb_filename = f"thumb_{photo_id}.jpg"
 
     full_path = images_dir / filename
+    orig_path = images_dir / orig_filename
     thumb_path = images_dir / thumb_filename
 
     # Save full resolution JPEG
-    image.save(full_path, "JPEG", quality=92, optimize=True)
+    image.save(orig_path, "JPEG", quality=95, optimize=True)
+
+    # Save web-optimized display image compressed to ~500kB (max 2048px)
+    web_bytes = compress_image_to_target(image, target_bytes=500 * 1024, max_dim=2048)
+    with open(full_path, "wb") as f:
+        f.write(web_bytes)
+    logger.info("Saved ~500kB web-optimized image to %s (%d bytes)", filename, len(web_bytes))
 
     # Save web-optimized thumbnail (max 400px width)
     thumb_width = 400
@@ -218,20 +503,10 @@ def process_image(
     detected_bins: List[GeminiDetectedBin] = []
 
     if api_key and api_key.strip():
-        logger.info("Calling Gemini API for photo %s...", original_name)
-        # Re-encode compressed jpeg for the API call (max 2048px to stay fast and within limits)
-        api_img = image
-        if max(orig_width, orig_height) > 2048:
-            scale = 2048 / max(orig_width, orig_height)
-            api_img = image.resize(
-                (int(orig_width * scale), int(orig_height * scale)),
-                Image.Resampling.LANCZOS,
-            )
-        api_buf = BytesIO()
-        api_img.save(api_buf, "JPEG", quality=85)
+        logger.info("Calling Gemini API with tiled inference for photo %s...", original_name)
         try:
-            detected_bins = detect_bins_with_gemini(
-                image_bytes=api_buf.getvalue(),
+            detected_bins = detect_bins_tiled(
+                image=image,
                 api_key=api_key,
                 model_name=gemini_model,
             )

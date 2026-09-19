@@ -1,4 +1,4 @@
-.PHONY: all install test build run dev seed docker-build docker-up docker-down
+.PHONY: all install test build run dev seed docker-build docker-up docker-down clean
 
 all: install build test
 
@@ -31,3 +31,15 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+clean:
+	@echo "Stopping any running backend server processes..."
+	-pkill -f "uvicorn backend.main:app" || true
+	@echo "Removing database and processed images..."
+	rm -f data/inventory.db data/inventory.db-wal data/inventory.db-shm
+	rm -rf data/images/*
+	mkdir -p data/images data/seed_photos
+	@echo "Reinitializing database..."
+	.venv/bin/python -c "from backend.database import init_db; init_db()"
+	@echo "Clean and reinitialization complete."
+

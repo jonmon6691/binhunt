@@ -113,9 +113,12 @@ def delete_photo_endpoint(photo_id: str):
 
     # Remove image files from disk
     main_img = images_dir / photo["filename"]
+    orig_img = images_dir / f"orig_{photo['filename']}"
     thumb_img = images_dir / f"thumb_{photo['filename']}"
     if main_img.exists():
         main_img.unlink(missing_ok=True)
+    if orig_img.exists():
+        orig_img.unlink(missing_ok=True)
     if thumb_img.exists():
         thumb_img.unlink(missing_ok=True)
 
