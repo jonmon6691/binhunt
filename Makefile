@@ -17,7 +17,7 @@ seed:
 	.venv/bin/python -m backend.seed
 
 run: build
-	DATA_DIR=./data .venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+	DATA_DIR=./data .venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 
 dev:
 	@echo "Starting backend and frontend in parallel..."

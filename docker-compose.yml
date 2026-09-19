@@ -8,7 +8,7 @@ services:
     container_name: inventory-locator
     restart: unless-stopped
     ports:
-      - "${PORT:-8000}:8000"
+      - "127.0.0.1:${PORT:-8000}:8000"
     volumes:
       # Persistent host mount for SQLite database, images, and seed_photos drop folder
       - ./data:/app/data
@@ -18,3 +18,23 @@ services:
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
       - DATA_DIR=/app/data
       - PORT=8000
+
+  caddy:
+    image: caddy:alpine
+    container_name: inventory-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME:-example.com}
+    command: caddy reverse-proxy --from ${DOMAIN_NAME:-example.com} --to inventory-locator:8000
+    depends_on:
+      - inventory-locator
+
+volumes:
+  caddy_data:
+  caddy_config:
