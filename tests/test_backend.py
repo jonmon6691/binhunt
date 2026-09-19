@@ -129,7 +129,22 @@ def test_api_manifest_and_upload(monkeypatch):
     assert (images_dir / f"orig_{photo_id}.jpg").exists()
     assert (images_dir / f"thumb_{photo_id}.jpg").exists()
 
-    del_res = client.delete(f"/api/photos/{photo_id}")
+    # Delete without password header should fail (401)
+    unauth_del = client.delete(f"/api/photos/{photo_id}")
+    assert unauth_del.status_code == 401
+
+    # Delete with invalid password hash should fail (401)
+    invalid_del = client.delete(
+        f"/api/photos/{photo_id}",
+        headers={"X-Admin-Password-Hash": "wronghash"},
+    )
+    assert invalid_del.status_code == 401
+
+    # Delete with correct password hash should succeed (200)
+    del_res = client.delete(
+        f"/api/photos/{photo_id}",
+        headers={"X-Admin-Password-Hash": correct_hash},
+    )
     assert del_res.status_code == 200
     assert get_photo(photo_id) is None
     assert not (images_dir / f"{photo_id}.jpg").exists()

@@ -29,12 +29,13 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
-  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Admin password prompt state
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingDeletePhoto, setPendingDeletePhoto] = useState<Photo | null>(null);
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [passwordError, setPasswordError] = useState<string>('');
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -48,84 +49,109 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     setErrorMessage('');
     setPasswordError('');
     setPasswordInput('');
+    setPendingDeletePhoto(null);
     setPendingFile(file);
+  };
+
+  const requestDelete = (photo: Photo) => {
+    setErrorMessage('');
+    setPasswordError('');
+    setPasswordInput('');
+    setPendingFile(null);
+    setPendingDeletePhoto(photo);
   };
 
   const cancelPasswordPrompt = () => {
     setPendingFile(null);
+    setPendingDeletePhoto(null);
     setPasswordInput('');
     setPasswordError('');
   };
 
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pendingFile || !passwordInput.trim()) return;
+    if (!passwordInput.trim()) return;
 
-    setIsUploading(true);
-    setPasswordError('');
-    setUploadStatus('Hashing admin password...');
+    if (pendingFile) {
+      setIsUploading(true);
+      setPasswordError('');
+      setUploadStatus('Hashing admin password...');
 
-    try {
-      const passwordHash = await hashPassword(passwordInput);
+      try {
+        const passwordHash = await hashPassword(passwordInput);
 
-      setUploadStatus('Uploading shelf image...');
-      const formData = new FormData();
-      formData.append('file', pendingFile);
+        setUploadStatus('Uploading shelf image...');
+        const formData = new FormData();
+        formData.append('file', pendingFile);
 
-      setUploadStatus('Analyzing shelf with Vision AI (detecting bins & labels)...');
-      const res = await fetch('/api/photos', {
-        method: 'POST',
-        headers: {
-          'X-Admin-Password-Hash': passwordHash,
-        },
-        body: formData,
-      });
+        setUploadStatus('Analyzing shelf with Vision AI (detecting bins & labels)...');
+        const res = await fetch('/api/photos', {
+          method: 'POST',
+          headers: {
+            'X-Admin-Password-Hash': passwordHash,
+          },
+          body: formData,
+        });
 
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        if (res.status === 401) {
-          setPasswordError(errorData.detail || 'Invalid admin password. Please try again.');
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          if (res.status === 401) {
+            setPasswordError(errorData.detail || 'Invalid admin password. Please try again.');
+            setIsUploading(false);
+            setUploadStatus('');
+            return;
+          }
+          throw new Error(errorData.detail || 'Upload and vision ingestion failed');
+        }
+
+        setUploadStatus('Saving records...');
+        const data = await res.json();
+        onUploadSuccess(data.photo);
+        setUploadStatus('Ingestion complete!');
+        setTimeout(() => {
           setIsUploading(false);
           setUploadStatus('');
-          return;
-        }
-        throw new Error(errorData.detail || 'Upload and vision ingestion failed');
-      }
-
-      setUploadStatus('Saving records...');
-      const data = await res.json();
-      onUploadSuccess(data.photo);
-      setUploadStatus('Ingestion complete!');
-      setTimeout(() => {
+          setPendingFile(null);
+          setPasswordInput('');
+        }, 1200);
+      } catch (err: any) {
+        console.error('Upload error:', err);
+        setPasswordError(err.message || 'An error occurred during ingestion.');
         setIsUploading(false);
         setUploadStatus('');
-        setPendingFile(null);
+      }
+    } else if (pendingDeletePhoto) {
+      setIsDeleting(true);
+      setPasswordError('');
+
+      try {
+        const passwordHash = await hashPassword(passwordInput);
+        const res = await fetch(`/api/photos/${pendingDeletePhoto.id}`, {
+          method: 'DELETE',
+          headers: {
+            'X-Admin-Password-Hash': passwordHash,
+          },
+        });
+
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          if (res.status === 401) {
+            setPasswordError(errorData.detail || 'Invalid admin password. Please try again.');
+            setIsDeleting(false);
+            return;
+          }
+          throw new Error(errorData.detail || 'Failed to delete photo');
+        }
+
+        onDeleteSuccess(pendingDeletePhoto.id);
+        setPendingDeletePhoto(null);
         setPasswordInput('');
-      }, 1200);
-    } catch (err: any) {
-      console.error('Upload error:', err);
-      setPasswordError(err.message || 'An error occurred during ingestion.');
-      setIsUploading(false);
-      setUploadStatus('');
-    }
-  };
-
-  const handleDelete = async (photoId: string) => {
-    if (!window.confirm('Are you sure you want to delete this shelf photo and all its indexed bins?')) {
-      return;
-    }
-
-    setDeletingId(photoId);
-    try {
-      const res = await fetch(`/api/photos/${photoId}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error('Failed to delete photo');
-      onDeleteSuccess(photoId);
-    } catch (err: any) {
-      alert(err.message || 'Error deleting photo');
-    } finally {
-      setDeletingId(null);
+      } catch (err: any) {
+        console.error('Delete error:', err);
+        setPasswordError(err.message || 'An error occurred while deleting.');
+      } finally {
+        setIsDeleting(false);
+      }
     }
   };
 
@@ -259,16 +285,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                     </div>
 
                     <button
-                      onClick={() => handleDelete(photo.id)}
-                      disabled={deletingId === photo.id}
+                      onClick={() => requestDelete(photo)}
+                      disabled={isDeleting || isUploading}
                       className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-slate-800 transition-colors disabled:opacity-50"
                       title="Delete shelf photo"
                     >
-                      {deletingId === photo.id ? (
-                        <Loader2 className="w-4 h-4 animate-spin text-red-400" />
-                      ) : (
-                        <Trash2 className="w-4 h-4" />
-                      )}
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                 ))}
@@ -291,26 +313,49 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         </div>
 
         {/* Admin Password Prompt Dialog Overlay */}
-        {pendingFile && (
+        {(pendingFile || pendingDeletePhoto) && (
           <div className="absolute inset-0 z-20 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
             <div className="relative w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-6 space-y-4">
               <div className="flex items-center space-x-3">
-                <div className="p-2.5 rounded-xl bg-cyan-950/70 border border-cyan-800/60 text-cyan-400 flex-shrink-0">
-                  <Lock className="w-5 h-5" />
+                <div
+                  className={`p-2.5 rounded-xl border flex-shrink-0 ${
+                    pendingDeletePhoto
+                      ? 'bg-red-950/70 border-red-800/60 text-red-400'
+                      : 'bg-cyan-950/70 border-cyan-800/60 text-cyan-400'
+                  }`}
+                >
+                  {pendingDeletePhoto ? <Trash2 className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
                 </div>
                 <div>
                   <h3 className="text-base font-semibold text-slate-100">Admin Authentication</h3>
-                  <p className="text-xs text-slate-400">Enter admin password to upload shelf photo</p>
+                  <p className="text-xs text-slate-400">
+                    {pendingDeletePhoto
+                      ? 'Enter admin password to delete shelf photo'
+                      : 'Enter admin password to upload shelf photo'}
+                  </p>
                 </div>
               </div>
 
               <div className="text-xs text-slate-400 bg-slate-800/50 p-3 rounded-xl border border-slate-700/60">
-                <p className="font-mono text-slate-300 truncate">
-                  <span className="text-slate-500">File:</span> {pendingFile.name}
-                </p>
-                <p className="text-[11px] text-slate-400 mt-1">
-                  Password is set in <code className="text-cyan-300 font-mono">.env</code> and hashed on the client before transmission.
-                </p>
+                {pendingDeletePhoto ? (
+                  <>
+                    <p className="font-mono text-slate-300 truncate">
+                      <span className="text-slate-500">Delete:</span> {pendingDeletePhoto.original_name}
+                    </p>
+                    <p className="text-[11px] text-red-400 mt-1">
+                      Warning: This will permanently delete this shelf photo and all {pendingDeletePhoto.bins.length} indexed bins.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-mono text-slate-300 truncate">
+                      <span className="text-slate-500">File:</span> {pendingFile?.name}
+                    </p>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Password is set in <code className="text-cyan-300 font-mono">.env</code> and hashed on the client before transmission.
+                    </p>
+                  </>
+                )}
               </div>
 
               <form onSubmit={handlePasswordSubmit} className="space-y-4">
@@ -327,7 +372,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                     }}
                     placeholder="Enter admin password..."
                     autoFocus
-                    disabled={isUploading}
+                    disabled={isUploading || isDeleting}
                     className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 font-mono"
                   />
                   {passwordError && (
@@ -342,23 +387,27 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                   <button
                     type="button"
                     onClick={cancelPasswordPrompt}
-                    disabled={isUploading}
+                    disabled={isUploading || isDeleting}
                     className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors disabled:opacity-50"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    disabled={isUploading || !passwordInput.trim()}
-                    className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-medium transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-cyan-950/50"
+                    disabled={isUploading || isDeleting || !passwordInput.trim()}
+                    className={`px-4 py-2 rounded-xl text-white text-xs font-medium transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
+                      pendingDeletePhoto
+                        ? 'bg-red-600 hover:bg-red-500 shadow-red-950/50'
+                        : 'bg-cyan-600 hover:bg-cyan-500 shadow-cyan-950/50'
+                    }`}
                   >
-                    {isUploading ? (
+                    {isUploading || isDeleting ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Verifying & Uploading...</span>
+                        <span>{pendingDeletePhoto ? 'Deleting...' : 'Verifying & Uploading...'}</span>
                       </>
                     ) : (
-                      <span>Confirm & Upload</span>
+                      <span>{pendingDeletePhoto ? 'Confirm & Delete' : 'Confirm & Upload'}</span>
                     )}
                   </button>
                 </div>

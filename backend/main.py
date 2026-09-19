@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Header, status
+from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -71,12 +71,10 @@ def get_inventory_manifest():
     return get_manifest()
 
 
-@app.post("/api/photos", status_code=status.HTTP_201_CREATED)
-async def upload_photo(
-    file: UploadFile = File(...),
+def verify_admin_password(
     x_admin_password_hash: Optional[str] = Header(None, alias="X-Admin-Password-Hash"),
-):
-    """Ingests a new shelf photo, running Gemini VLM detection."""
+) -> None:
+    """Verifies that the client provided the correct SHA-256 hash of ADMIN_PASSWORD."""
     admin_password = os.getenv("ADMIN_PASSWORD", "")
     if not admin_password:
         raise HTTPException(
@@ -93,6 +91,13 @@ async def upload_photo(
             detail="Invalid or missing admin password",
         )
 
+
+@app.post("/api/photos", status_code=status.HTTP_201_CREATED)
+async def upload_photo(
+    file: UploadFile = File(...),
+    _: None = Depends(verify_admin_password),
+):
+    """Ingests a new shelf photo, running Gemini VLM detection."""
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -121,7 +126,10 @@ async def upload_photo(
 
 
 @app.delete("/api/photos/{photo_id}")
-def delete_photo_endpoint(photo_id: str):
+def delete_photo_endpoint(
+    photo_id: str,
+    _: None = Depends(verify_admin_password),
+):
     """Deletes a shelf photo, its thumbnail, and all associated bin annotations."""
     photo = get_photo(photo_id)
     if not photo:
