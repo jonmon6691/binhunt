@@ -1,12 +1,15 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import hashlib
+import hmac
 import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, status
+from fastapi import FastAPI, HTTPException, UploadFile, File, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -69,8 +72,27 @@ def get_inventory_manifest():
 
 
 @app.post("/api/photos", status_code=status.HTTP_201_CREATED)
-async def upload_photo(file: UploadFile = File(...)):
+async def upload_photo(
+    file: UploadFile = File(...),
+    x_admin_password_hash: Optional[str] = Header(None, alias="X-Admin-Password-Hash"),
+):
     """Ingests a new shelf photo, running Gemini VLM detection."""
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
+    if not admin_password:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="ADMIN_PASSWORD is not configured in environment/.env",
+        )
+
+    expected_hash = hashlib.sha256(admin_password.encode("utf-8")).hexdigest()
+    if not x_admin_password_hash or not hmac.compare_digest(
+        x_admin_password_hash.strip().lower(), expected_hash.lower()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing admin password",
+        )
+
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

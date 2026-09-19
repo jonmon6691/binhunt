@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { X, UploadCloud, Trash2, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { X, UploadCloud, Trash2, CheckCircle2, AlertCircle, Loader2, Lock } from 'lucide-react';
 import type { Photo } from '../types';
 
 interface UploadModalProps {
@@ -8,6 +8,14 @@ interface UploadModalProps {
   photos: Photo[];
   onUploadSuccess: (newPhoto: Photo) => void;
   onDeleteSuccess: (photoId: string) => void;
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export const UploadModal: React.FC<UploadModalProps> = ({
@@ -22,32 +30,65 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   const [uploadStatus, setUploadStatus] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Admin password prompt state
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [passwordInput, setPasswordInput] = useState<string>('');
+  const [passwordError, setPasswordError] = useState<string>('');
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
-  const handleFile = async (file: File) => {
+  const selectFileForUpload = (file: File) => {
     if (!file.type.startsWith('image/')) {
       setErrorMessage('Please select a valid image file (JPEG, PNG, or WebP).');
       return;
     }
+    setErrorMessage('');
+    setPasswordError('');
+    setPasswordInput('');
+    setPendingFile(file);
+  };
+
+  const cancelPasswordPrompt = () => {
+    setPendingFile(null);
+    setPasswordInput('');
+    setPasswordError('');
+  };
+
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingFile || !passwordInput.trim()) return;
 
     setIsUploading(true);
-    setErrorMessage('');
-    setUploadStatus('Uploading shelf image...');
+    setPasswordError('');
+    setUploadStatus('Hashing admin password...');
 
     try {
+      const passwordHash = await hashPassword(passwordInput);
+
+      setUploadStatus('Uploading shelf image...');
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', pendingFile);
 
       setUploadStatus('Analyzing shelf with Vision AI (detecting bins & labels)...');
       const res = await fetch('/api/photos', {
         method: 'POST',
+        headers: {
+          'X-Admin-Password-Hash': passwordHash,
+        },
         body: formData,
       });
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          setPasswordError(errorData.detail || 'Invalid admin password. Please try again.');
+          setIsUploading(false);
+          setUploadStatus('');
+          return;
+        }
         throw new Error(errorData.detail || 'Upload and vision ingestion failed');
       }
 
@@ -58,10 +99,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       setTimeout(() => {
         setIsUploading(false);
         setUploadStatus('');
+        setPendingFile(null);
+        setPasswordInput('');
       }, 1200);
     } catch (err: any) {
       console.error('Upload error:', err);
-      setErrorMessage(err.message || 'An error occurred during ingestion.');
+      setPasswordError(err.message || 'An error occurred during ingestion.');
       setIsUploading(false);
       setUploadStatus('');
     }
@@ -100,7 +143,10 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             </p>
           </div>
           <button
-            onClick={onClose}
+            onClick={() => {
+              cancelPasswordPrompt();
+              onClose();
+            }}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -120,7 +166,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               e.preventDefault();
               setIsDragging(false);
               if (e.dataTransfer.files?.[0]) {
-                handleFile(e.dataTransfer.files[0]);
+                selectFileForUpload(e.dataTransfer.files[0]);
               }
             }}
             onClick={() => fileInputRef.current?.click()}
@@ -137,7 +183,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               className="hidden"
               onChange={(e) => {
                 if (e.target.files?.[0]) {
-                  handleFile(e.target.files[0]);
+                  selectFileForUpload(e.target.files[0]);
+                  e.target.value = '';
                 }
               }}
             />
@@ -233,12 +280,92 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         {/* Footer */}
         <div className="flex items-center justify-end px-6 py-3 border-t border-slate-800 bg-slate-900/50">
           <button
-            onClick={onClose}
+            onClick={() => {
+              cancelPasswordPrompt();
+              onClose();
+            }}
             className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-colors"
           >
             Close
           </button>
         </div>
+
+        {/* Admin Password Prompt Dialog Overlay */}
+        {pendingFile && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+            <div className="relative w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-6 space-y-4">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 rounded-xl bg-cyan-950/70 border border-cyan-800/60 text-cyan-400 flex-shrink-0">
+                  <Lock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-slate-100">Admin Authentication</h3>
+                  <p className="text-xs text-slate-400">Enter admin password to upload shelf photo</p>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-400 bg-slate-800/50 p-3 rounded-xl border border-slate-700/60">
+                <p className="font-mono text-slate-300 truncate">
+                  <span className="text-slate-500">File:</span> {pendingFile.name}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Password is set in <code className="text-cyan-300 font-mono">.env</code> and hashed on the client before transmission.
+                </p>
+              </div>
+
+              <form onSubmit={handlePasswordSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    Admin Password
+                  </label>
+                  <input
+                    type="password"
+                    value={passwordInput}
+                    onChange={(e) => {
+                      setPasswordInput(e.target.value);
+                      setPasswordError('');
+                    }}
+                    placeholder="Enter admin password..."
+                    autoFocus
+                    disabled={isUploading}
+                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 font-mono"
+                  />
+                  {passwordError && (
+                    <div className="flex items-center space-x-1.5 mt-2 text-xs text-red-400">
+                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                      <span>{passwordError}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-end space-x-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={cancelPasswordPrompt}
+                    disabled={isUploading}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isUploading || !passwordInput.trim()}
+                    className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-medium transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-cyan-950/50"
+                  >
+                    {isUploading ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Verifying & Uploading...</span>
+                      </>
+                    ) : (
+                      <span>Confirm & Upload</span>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

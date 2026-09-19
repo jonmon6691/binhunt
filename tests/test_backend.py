@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shutil
 import tempfile
@@ -74,6 +75,7 @@ def test_database_photo_and_bins():
 
 def test_api_manifest_and_upload(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("ADMIN_PASSWORD", "supersecret123")
     client = TestClient(app)
 
     # Health
@@ -85,12 +87,29 @@ def test_api_manifest_and_upload(monkeypatch):
     import io
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
-    buf.seek(0)
+    img_bytes = buf.getvalue()
 
-    # Upload
+    # Upload without password header should fail (401)
+    unauth_res = client.post(
+        "/api/photos",
+        files={"file": ("test_upload.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+    )
+    assert unauth_res.status_code == 401
+
+    # Upload with invalid password hash should fail (401)
+    invalid_hash_res = client.post(
+        "/api/photos",
+        files={"file": ("test_upload.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+        headers={"X-Admin-Password-Hash": "invalidhash123"},
+    )
+    assert invalid_hash_res.status_code == 401
+
+    # Upload with correct password hash should succeed (201)
+    correct_hash = hashlib.sha256(b"supersecret123").hexdigest()
     upload_res = client.post(
         "/api/photos",
-        files={"file": ("test_upload.jpg", buf, "image/jpeg")},
+        files={"file": ("test_upload.jpg", io.BytesIO(img_bytes), "image/jpeg")},
+        headers={"X-Admin-Password-Hash": correct_hash},
     )
     assert upload_res.status_code == 201
     data = upload_res.json()
