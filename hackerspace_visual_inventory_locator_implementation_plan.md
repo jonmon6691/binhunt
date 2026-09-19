@@ -261,7 +261,7 @@ Use an SVG element directly stacked on top of the `<img>` tag inside a relative 
 
 ### Directory Layout
 ```
-/inventory-locator/
+/spacegrep-app/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── Makefile
@@ -331,11 +331,11 @@ CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 version: "3.8"
 
 services:
-  inventory-locator:
+  spacegrep-app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: inventory-locator
+    container_name: spacegrep-app
     restart: unless-stopped
     ports:
       - "80:8000"

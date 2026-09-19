@@ -1,11 +1,11 @@
 version: "3.8"
 
 services:
-  inventory-locator:
+  spacegrep-app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: inventory-locator
+    container_name: spacegrep-app
     restart: unless-stopped
     ports:
       - "127.0.0.1:${PORT:-8000}:8000"
@@ -21,7 +21,7 @@ services:
 
   caddy:
     image: caddy:alpine
-    container_name: inventory-caddy
+    container_name: spacegrep-caddy
     restart: unless-stopped
     ports:
       - "80:80"
@@ -31,9 +31,9 @@ services:
       - caddy_config:/config
     environment:
       - DOMAIN_NAME=${DOMAIN_NAME:-example.com}
-    command: caddy reverse-proxy --from ${DOMAIN_NAME:-example.com} --to inventory-locator:8000
+    command: caddy reverse-proxy --from ${DOMAIN_NAME:-example.com} --to spacegrep-app:8000
     depends_on:
-      - inventory-locator
+      - spacegrep-app
 
 volumes:
   caddy_data:

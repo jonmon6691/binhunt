@@ -29,7 +29,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("inventory-locator")
+logger = logging.getLogger("spacegrep-app")
 
 
 @asynccontextmanager
@@ -62,7 +62,7 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "service": "inventory-locator"}
+    return {"status": "ok", "service": "spacegrep-app"}
 
 
 @app.get("/api/manifest")
