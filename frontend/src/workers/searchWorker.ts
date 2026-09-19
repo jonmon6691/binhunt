@@ -1,76 +1,37 @@
 import Fuse from 'fuse.js';
-import { pipeline, env } from '@xenova/transformers';
 import type { Photo, MatchResult, WorkerIncomingMessage, WorkerOutgoingMessage } from '../types';
-
-// Configure transformers.js for client browser execution
-env.allowLocalModels = false;
-env.useBrowserCache = true;
 
 interface IndexedBin {
   id: string;
   photoId: string;
   label: string;
   tagsText: string;
-  vector: Float32Array | null;
 }
 
 let fuseInstance: Fuse<IndexedBin> | null = null;
 let allBins: IndexedBin[] = [];
-let featureExtractor: any = null;
-let isExtractorLoading = false;
-
-async function initFeatureExtractor() {
-  if (featureExtractor || isExtractorLoading) return featureExtractor;
-  isExtractorLoading = true;
-  try {
-    featureExtractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
-      quantized: true,
-    });
-  } catch (err) {
-    console.warn('Could not initialize transformers.js pipeline in worker:', err);
-  } finally {
-    isExtractorLoading = false;
-  }
-  return featureExtractor;
-}
-
-// Start loading the embedding pipeline in background
-initFeatureExtractor();
 
 function handleInitManifest(manifest: Photo[]) {
   allBins = [];
 
   for (const photo of manifest) {
     for (const bin of photo.bins) {
-      let vecArray: Float32Array | null = null;
-      if (bin.embedding && bin.embedding.length > 0) {
-        vecArray = new Float32Array(bin.embedding);
-        // Ensure unit normalization
-        let normSq = 0;
-        for (let i = 0; i < vecArray.length; i++) normSq += vecArray[i] * vecArray[i];
-        const norm = Math.sqrt(normSq);
-        if (norm > 0) {
-          for (let i = 0; i < vecArray.length; i++) vecArray[i] /= norm;
-        }
-      }
-
       allBins.push({
         id: bin.id,
         photoId: photo.id,
         label: bin.label,
         tagsText: bin.semantic_tags.join(' '),
-        vector: vecArray,
       });
     }
   }
 
-  // Configure Fuse for fuzzy literal matching
+  // Configure Fuse for fuzzy matching on label and Gemini-generated semantic tags
   fuseInstance = new Fuse(allBins, {
     keys: [
-      { name: 'label', weight: 0.7 },
-      { name: 'tagsText', weight: 0.3 },
+      { name: 'label', weight: 0.6 },
+      { name: 'tagsText', weight: 0.4 },
     ],
-    threshold: 0.45,
+    threshold: 0.5,
     ignoreLocation: true,
     includeScore: true,
     minMatchCharLength: 2,
@@ -83,7 +44,7 @@ function handleInitManifest(manifest: Photo[]) {
   self.postMessage(reply);
 }
 
-async function handleSearch(query: string, queryId: number) {
+function handleSearch(query: string, queryId: number) {
   const trimmed = query.trim();
   if (!trimmed || allBins.length === 0) {
     const emptyReply: WorkerOutgoingMessage = {
@@ -98,68 +59,36 @@ async function handleSearch(query: string, queryId: number) {
     return;
   }
 
-  // 1. Literal search via Fuse.js
-  const literalScores: Record<string, number> = {};
-  if (fuseInstance) {
-    const fuseResults = fuseInstance.search(trimmed);
-    for (const res of fuseResults) {
-      // Fuse score: 0 is perfect, 1 is complete mismatch
-      const fuseScore = res.score ?? 1.0;
-      const scoreLiteral = Math.max(0, 1.0 - fuseScore);
-      literalScores[res.item.id] = scoreLiteral;
-    }
-  }
-
-  // 2. Semantic vector search
-  const semanticScores: Record<string, number> = {};
-  try {
-    const extractor = await initFeatureExtractor();
-    if (extractor) {
-      const output = await extractor(trimmed, { pooling: 'mean', normalize: true });
-      const queryVec = output.data as Float32Array;
-
-      for (const bin of allBins) {
-        if (!bin.vector) continue;
-        let dotProduct = 0;
-        const len = Math.min(queryVec.length, bin.vector.length);
-        for (let i = 0; i < len; i++) {
-          dotProduct += queryVec[i] * bin.vector[i];
-        }
-        semanticScores[bin.id] = dotProduct;
-      }
-    }
-  } catch (err) {
-    console.warn('Semantic vector inference failed:', err);
-  }
-
-  // 3. Score combination: max(Score_literal * 1.25, Score_semantic)
   const matches: Record<string, MatchResult> = {};
   let highCount = 0;
   let moderateCount = 0;
 
-  for (const bin of allBins) {
-    const sLit = (literalScores[bin.id] ?? 0.0) * 1.25;
-    const sSem = semanticScores[bin.id] ?? 0.0;
-    const finalScore = Math.max(sLit, sSem);
+  if (fuseInstance) {
+    const fuseResults = fuseInstance.search(trimmed);
+    for (const res of fuseResults) {
+      const fuseScore = res.score ?? 1.0;
+      // 0.0 is perfect match, 1.0 is complete mismatch
+      const confidence = Math.max(0, 1.0 - fuseScore);
 
-    if (finalScore >= 0.70) {
-      matches[bin.id] = {
-        binId: bin.id,
-        photoId: bin.photoId,
-        score: Math.min(1.0, finalScore),
-        tier: 'high',
-        label: bin.label,
-      };
-      highCount++;
-    } else if (finalScore >= 0.50) {
-      matches[bin.id] = {
-        binId: bin.id,
-        photoId: bin.photoId,
-        score: Math.min(1.0, finalScore),
-        tier: 'moderate',
-        label: bin.label,
-      };
-      moderateCount++;
+      if (confidence >= 0.65) {
+        matches[res.item.id] = {
+          binId: res.item.id,
+          photoId: res.item.photoId,
+          score: Math.min(1.0, confidence),
+          tier: 'high',
+          label: res.item.label,
+        };
+        highCount++;
+      } else if (confidence >= 0.45) {
+        matches[res.item.id] = {
+          binId: res.item.id,
+          photoId: res.item.photoId,
+          score: Math.min(1.0, confidence),
+          tier: 'moderate',
+          label: res.item.label,
+        };
+        moderateCount++;
+      }
     }
   }
 
@@ -174,11 +103,11 @@ async function handleSearch(query: string, queryId: number) {
   self.postMessage(reply);
 }
 
-self.onmessage = async (e: MessageEvent<WorkerIncomingMessage>) => {
+self.onmessage = (e: MessageEvent<WorkerIncomingMessage>) => {
   const msg = e.data;
   if (msg.type === 'INIT_MANIFEST') {
     handleInitManifest(msg.manifest);
   } else if (msg.type === 'SEARCH') {
-    await handleSearch(msg.query, msg.queryId);
+    handleSearch(msg.query, msg.queryId);
   }
 };

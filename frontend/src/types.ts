@@ -4,7 +4,6 @@ export interface Bin {
   label: string;
   semantic_tags: string[];
   bbox: [number, number, number, number]; // [x, y, w, h] normalized 0.0 - 1.0
-  embedding?: number[]; // 384-dimensional dense vector
 }
 
 export interface Photo {

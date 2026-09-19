@@ -1,7 +1,6 @@
 import json
 import os
 import sqlite3
-import struct
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,7 +53,6 @@ def init_db():
                     bbox_y REAL NOT NULL,
                     bbox_w REAL NOT NULL,
                     bbox_h REAL NOT NULL,
-                    embedding BLOB NOT NULL,
                     FOREIGN KEY(photo_id) REFERENCES photos(id) ON DELETE CASCADE
                 );
                 """
@@ -66,17 +64,6 @@ def init_db():
             )
     finally:
         conn.close()
-
-
-def serialize_embedding(vector: List[float]) -> bytes:
-    """Serializes a list of floats to binary bytes (Float32)."""
-    return struct.pack(f"{len(vector)}f", *vector)
-
-
-def deserialize_embedding(blob: bytes) -> List[float]:
-    """Deserializes binary bytes (Float32) back to a list of floats."""
-    count = len(blob) // 4
-    return list(struct.unpack(f"{count}f", blob))
 
 
 def insert_photo(
@@ -107,18 +94,16 @@ def insert_bin(
     label: str,
     semantic_tags: List[str],
     bbox: List[float],
-    embedding: List[float],
 ):
     conn = get_db_connection()
     try:
-        blob = serialize_embedding(embedding)
         with conn:
             conn.execute(
                 """
                 INSERT INTO bins (
                     id, photo_id, label, semantic_tags,
-                    bbox_x, bbox_y, bbox_w, bbox_h, embedding
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    bbox_x, bbox_y, bbox_w, bbox_h
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     bin_id,
@@ -129,7 +114,6 @@ def insert_bin(
                     bbox[1],
                     bbox[2],
                     bbox[3],
-                    blob,
                 ),
             )
     finally:
@@ -148,7 +132,7 @@ def get_photo(photo_id: str) -> Optional[Dict[str, Any]]:
         photo_dict = dict(row)
         bin_rows = conn.execute(
             """
-            SELECT id, photo_id, label, semantic_tags, bbox_x, bbox_y, bbox_w, bbox_h, embedding
+            SELECT id, photo_id, label, semantic_tags, bbox_x, bbox_y, bbox_w, bbox_h
             FROM bins WHERE photo_id = ?
             """,
             (photo_id,),
@@ -162,7 +146,6 @@ def get_photo(photo_id: str) -> Optional[Dict[str, Any]]:
                     "label": b["label"],
                     "semantic_tags": json.loads(b["semantic_tags"]),
                     "bbox": [b["bbox_x"], b["bbox_y"], b["bbox_w"], b["bbox_h"]],
-                    "embedding": deserialize_embedding(b["embedding"]),
                 }
             )
         photo_dict["bins"] = bins
@@ -196,7 +179,7 @@ def get_manifest() -> List[Dict[str, Any]]:
             photo_dict = dict(p)
             bin_rows = conn.execute(
                 """
-                SELECT id, photo_id, label, semantic_tags, bbox_x, bbox_y, bbox_w, bbox_h, embedding
+                SELECT id, photo_id, label, semantic_tags, bbox_x, bbox_y, bbox_w, bbox_h
                 FROM bins WHERE photo_id = ?
                 """,
                 (p["id"],),
@@ -208,7 +191,6 @@ def get_manifest() -> List[Dict[str, Any]]:
                     "label": b["label"],
                     "semantic_tags": json.loads(b["semantic_tags"]),
                     "bbox": [b["bbox_x"], b["bbox_y"], b["bbox_w"], b["bbox_h"]],
-                    "embedding": deserialize_embedding(b["embedding"]),
                 }
                 for b in bin_rows
             ]

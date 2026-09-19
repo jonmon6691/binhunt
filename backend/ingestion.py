@@ -20,43 +20,6 @@ from backend.models import GeminiDetectedBin
 
 logger = logging.getLogger(__name__)
 
-# Lazy singleton for fastembed model
-_EMBEDDING_MODEL = None
-
-
-def get_embedding_model():
-    global _EMBEDDING_MODEL
-    if _EMBEDDING_MODEL is None:
-        try:
-            from fastembed import TextEmbedding
-            # BAAI/bge-small-en-v1.5 produces 384-dimensional normalized vectors
-            _EMBEDDING_MODEL = TextEmbedding("BAAI/bge-small-en-v1.5")
-        except Exception as e:
-            logger.warning("Could not initialize FastEmbed TextEmbedding: %s", e)
-            _EMBEDDING_MODEL = None
-    return _EMBEDDING_MODEL
-
-
-def compute_dense_embedding(text: str) -> List[float]:
-    """Generates a 384-dimensional float vector for the input text."""
-    model = get_embedding_model()
-    if model is not None:
-        try:
-            vectors = list(model.embed([text]))
-            if len(vectors) > 0:
-                return [float(x) for x in vectors[0]]
-        except Exception as e:
-            logger.warning("Embedding generation failed: %s", e)
-
-    # Deterministic fallback vector (384 floats) if FastEmbed is unavailable
-    import hashlib
-    h = hashlib.sha256(text.encode("utf-8")).digest()
-    repeated = (h * 48)[: 384 * 4]
-    import struct
-    floats = struct.unpack(f"{384}f", repeated)
-    norm = sum(f * f for f in floats) ** 0.5 or 1.0
-    return [float(f / norm) for f in floats]
-
 
 def normalize_box(box_2d: List[int]) -> List[float]:
     """
@@ -283,12 +246,10 @@ def process_image(
         logger.info("GEMINI_API_KEY not provided. Using offline mock detector for %s.", original_name)
         detected_bins = mock_detect_bins(orig_width, orig_height, original_name)
 
-    # 3. Coordinate normalization and embedding generation
+    # 3. Coordinate normalization and bin record insertion
     for b in detected_bins:
         bin_id = str(uuid.uuid4())
         norm_bbox = normalize_box(b.box_2d)
-        embed_text = f"{b.label} | {' '.join(b.semantic_tags)}"
-        vector = compute_dense_embedding(embed_text)
 
         insert_bin(
             bin_id=bin_id,
@@ -296,7 +257,6 @@ def process_image(
             label=b.label,
             semantic_tags=b.semantic_tags,
             bbox=norm_bbox,
-            embedding=vector,
         )
 
     from backend.database import get_photo

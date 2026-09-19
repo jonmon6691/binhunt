@@ -26,9 +26,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-cache the FastEmbed model in the Docker image so it starts up instantly offline
-RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"
-
 # Copy built frontend assets into static and frontend/dist
 COPY --from=frontend-builder /build/dist /app/frontend/dist
 COPY --from=frontend-builder /build/dist /app/static

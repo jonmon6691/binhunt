@@ -64,13 +64,13 @@ def health_check():
 
 @app.get("/api/manifest")
 def get_inventory_manifest():
-    """Returns complete shelf photos and bin annotations with embeddings for client search."""
+    """Returns complete shelf photos and bin annotations for client search."""
     return get_manifest()
 
 
 @app.post("/api/photos", status_code=status.HTTP_201_CREATED)
 async def upload_photo(file: UploadFile = File(...)):
-    """Ingests a new shelf photo, running Gemini VLM detection and vector embeddings."""
+    """Ingests a new shelf photo, running Gemini VLM detection."""
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

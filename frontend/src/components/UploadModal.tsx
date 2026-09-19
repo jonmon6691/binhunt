@@ -51,7 +51,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         throw new Error(errorData.detail || 'Upload and vision ingestion failed');
       }
 
-      setUploadStatus('Generating semantic embeddings & saving records...');
+      setUploadStatus('Saving records...');
       const data = await res.json();
       onUploadSuccess(data.photo);
       setUploadStatus('Ingestion complete!');

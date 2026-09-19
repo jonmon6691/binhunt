@@ -11,7 +11,6 @@ class BinBase(BaseModel):
 class Bin(BinBase):
     id: str
     photo_id: str
-    embedding: Optional[List[float]] = None
 
 
 class Photo(BaseModel):
