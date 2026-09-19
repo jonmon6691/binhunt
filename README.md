@@ -1,23 +1,20 @@
 # Hackerspace Visual Inventory Locator
 
-A lightweight, self-contained visual inventory search appliance for hackerspaces, maker workshops, and electronics labs. It overlays high-resolution photos of component shelves, bins, and organizers with a real-time (< 50ms) hybrid (literal + semantic) search interface and peripheral radar target indicators.
+A lightweight, self-contained visual inventory search appliance for hackerspaces, maker workshops, and electronics labs. It overlays high-resolution photos of component shelves, bins, and organizers with a real-time (< 50ms) hybrid (literal + semantic) search interface.
+
+![Demo](docs/demo.jpg)
 
 ---
 
 ## Key Features
 
+- **Dynamic photo use** Upload or remove photos in the app. New photos are automatically indexed in seconds.
 - **Real-Time Keystroke Highlighting (< 50ms):** Bounding boxes highlight dynamically as you type via a dedicated Web Worker running `@xenova/transformers` (Wasm `Xenova/all-MiniLM-L6-v2`) and `Fuse.js` purely in the browser. Zero server search load.
 - **Hybrid Search (Literal + Semantic):**
   - **Literal:** Instant exact/fuzzy matches on part numbers and labels (`CR2032`, `ESP32`, `WLC100`, `Kapton`, `MOSFET`).
   - **Semantic:** Finds bins by functional intent or colloquial concept (`measure voltage` highlights Multimeters; `fix static shock` highlights ESD Wristbands; `heat resistant tape` highlights Kapton Tape).
-- **Two-Tier Visual Confidence:**
-  - **High Confidence ($\ge 0.70$):** Pulsing neon cyan bounding box with score percentage badge.
-  - **Moderate Confidence ($0.50 - 0.69$):** Glowing amber bounding box.
-- **Continuous Edge-to-Edge Stream:** Shelf photos fill the viewport width, allowing natural vertical scrolling through all workshop shelves.
-- **Peripheral Radar Indicators:** When a search matches a bin that is currently scrolled off-screen, directional HUD arrows appear along the screen periphery pointing angled arrows toward the target box. Clicking an arrow smoothly scrolls the viewport directly to the item.
-- **Floating Dynamic Omnibar:** Persistent fixed pill pinned at top-center containing search input, match counters, kiosk timer indicator, and upload modal trigger.
+- **Visual Confidence:** Match confidence is displayed as a % and the highest confidence results are highlighted.
 - **Kiosk Auto-Reset:** Configurable 60-second inactivity reset timer for shared workshop terminals. Clears the search bar and smoothly scrolls to top when idle.
-- **Seed Photos Drop Folder (`./data/seed_photos/`):** Simply drop workshop shelf photos into `./data/seed_photos/`. The appliance automatically detects, transcribes, embeds, and indexes any new photos on startup.
 - **Appliance-Grade Deployment:** Single Docker container with a single `./data` host directory mount storing the SQLite database (`inventory.db`), processed images, and seed photos.
 
 ---
@@ -105,11 +102,16 @@ There are two easy ways to add photos of your workshop shelves:
 
 ## Keyboard Shortcuts
 
-| Key | Action |
-| --- | --- |
-| `/` | Focus search bar from anywhere |
-| `Escape` | Clear search query and blur search bar |
-| `Click on Radar Arrow` | Smoothly scrolls to center the matching off-screen bin |
+| Key | Context | Action |
+| --- | --- | --- |
+| `/` | Global | Focus search bar from anywhere and select query text |
+| `Escape` | Global | Clear search query and blur search bar |
+| `Enter` | Search Bar | Defocus search and smoothly center the first or active match |
+| `n` | Global (outside search) | Cycle to the next matching bin and center it (vi/less style) |
+| `N` / `Shift + n` | Global (outside search) | Cycle to the previous matching bin and center it (vi/less style) |
+| `q` / `Q` | Global (outside search) | Quick reset: clear search, scroll to top, and reset kiosk timer |
+
+*(Tip: You can also click any off-screen **Radar Arrow** indicator or shelf match badge to smoothly scroll and center that bin).*
 
 ---
 
