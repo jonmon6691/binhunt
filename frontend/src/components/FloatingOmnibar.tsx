@@ -74,6 +74,18 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
   }, [whiteboxLogoUrl]);
 
   const [scrollY, setScrollY] = useState(0);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 640 : false
+  );
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 640);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -105,7 +117,11 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
   }, [searchQuery, onSearchChange]);
 
   const hasSearch = searchQuery.trim().length > 0;
-  const omnibarTop = Math.max(16, bannerHeight + 16 - scrollY);
+  const MOBILE_OFFSET = 44;
+  const topPinned = isMobile ? 12 : 16;
+  const omnibarTop = isMobile
+    ? Math.max(topPinned - MOBILE_OFFSET, bannerHeight + topPinned - scrollY)
+    : Math.max(topPinned, bannerHeight + topPinned - scrollY);
   const isAtTop = scrollY === 0;
 
   return (
@@ -115,10 +131,80 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
       }`}
       style={{ top: `${omnibarTop}px` }}
     >
-      <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 sm:gap-4">
-        {/* Left: Whitebox logo & spacegrep logo (scrolls with photos) */}
+      <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+        {/* Mobile top row: Logos on left, GitHub on right (hidden on sm+) */}
         <div
-          className={`flex items-center gap-2.5 sm:gap-3 flex-shrink-0 transition-opacity duration-150 ${
+          className={`flex sm:hidden items-center justify-between w-full mb-2 transition-opacity duration-150 ${
+            scrollY > 36 ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-100'
+          }`}
+        >
+          {/* Left: Whitebox logo & spacegrep logo */}
+          <div className="flex items-center gap-2.5 flex-shrink-0">
+            {Boolean(whiteboxLogoUrl && !imgError) && (
+              whiteboxLinkUrl && isSafeUrl(whiteboxLinkUrl) ? (
+                <a
+                  href={whiteboxLinkUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="h-9 flex items-center drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)] hover:opacity-80 transition-opacity flex-shrink-0"
+                  title="Whitebox"
+                  aria-label="Whitebox"
+                >
+                  <img
+                    src={whiteboxLogoUrl}
+                    alt="Whitebox"
+                    onError={() => setImgError(true)}
+                    className="h-full w-auto max-w-[110px] object-contain"
+                  />
+                </a>
+              ) : (
+                <div
+                  className="h-9 flex items-center drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)] flex-shrink-0"
+                  title="Whitebox"
+                  aria-label="Whitebox"
+                >
+                  <img
+                    src={whiteboxLogoUrl}
+                    alt="Whitebox"
+                    onError={() => setImgError(true)}
+                    className="h-full w-auto max-w-[110px] object-contain"
+                  />
+                </div>
+              )
+            )}
+
+            <div className="h-9 flex items-center drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+              <SpacegrepLogo className="h-full" />
+            </div>
+          </div>
+
+          {/* Right: GitHub project link on mobile */}
+          <div className="flex items-center flex-shrink-0">
+            <a
+              href="https://github.com/jonmon6691/spacegrep"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-slate-400 hover:text-white transition-all duration-200 hover:scale-110 active:scale-95 flex-shrink-0 drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)] p-1"
+              title="View on GitHub"
+              aria-label="View on GitHub"
+            >
+              <svg
+                role="img"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                className="w-5 h-5"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+              </svg>
+            </a>
+          </div>
+        </div>
+
+        {/* Desktop Left: Whitebox logo & spacegrep logo (scrolls with photos) */}
+        <div
+          className={`hidden sm:flex items-center gap-2.5 sm:gap-3 flex-shrink-0 transition-opacity duration-150 ${
             scrollY > 60 ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-100'
           }`}
           style={{
@@ -166,8 +252,8 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
           </div>
         </div>
 
-        {/* Center: Main Search Omnibar (spans full width between logos) */}
-        <div className="flex-1 min-w-0 pointer-events-auto">
+        {/* Main Search Omnibar (spans full width on mobile, flex-1 between logos on desktop) */}
+        <div className="w-full sm:w-auto sm:flex-1 min-w-0 pointer-events-auto">
           <div className="flex items-center justify-between px-3.5 py-2.5 rounded-2xl bg-slate-900/85 backdrop-blur-xl border border-slate-700/80 shadow-2xl shadow-black/60 transition-all duration-300 hover:border-slate-600">
         {/* Left: Search icon & text input */}
         <div className="flex items-center flex-1 space-x-2.5 min-w-0 pr-2">
@@ -267,9 +353,9 @@ export const FloatingOmnibar: FC<FloatingOmnibarProps> = ({
       </div>
     </div>
 
-    {/* Right: GitHub Project Link (scrolls with photos) */}
+    {/* Right: GitHub Project Link (desktop only, scrolls with photos) */}
     <div
-      className={`flex items-center flex-shrink-0 transition-opacity duration-150 ${
+      className={`hidden sm:flex items-center flex-shrink-0 transition-opacity duration-150 ${
         scrollY > 60 ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-100'
       }`}
       style={{

@@ -34,7 +34,7 @@ export const ShelfStream: React.FC<ShelfStreamProps> = ({
   }
 
   return (
-    <main className="w-full flex flex-col items-center pt-24 pb-32">
+    <main className="w-full flex flex-col items-center pt-28 sm:pt-24 pb-32">
       {photos.map((photo) => (
         <ShelfCard
           key={photo.id}
